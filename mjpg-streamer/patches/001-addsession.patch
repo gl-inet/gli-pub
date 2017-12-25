@@ -1,0 +1,157 @@
+--- a/plugins/output_http/httpd.c
++++ b/plugins/output_http/httpd.c
+@@ -509,7 +509,6 @@ void send_stream(cfd *context_fd, int in
+         free(frame);
+         return;
+     }
+-
+     DBG("Headers send, sending stream now\n");
+ 
+     while(!pglobal->stop) {
+@@ -1166,6 +1165,7 @@ void command(int id, int fd, char *param
+   if (svalue != NULL) free(svalue);
+ }
+ 
++int checkSession(char* cookies);
+ /******************************************************************************
+ Description.: Serve a connected TCP-client. This thread function is called
+               for each connect of a HTTP client like a webbrowser. It determines
+@@ -1208,7 +1208,7 @@ void *client_thread(void *arg)
+     req.query_string = NULL;
+ 
+     /* determine what to deliver */
+-    if(strstr(buffer, "GET /?action=snapshot") != NULL) {
++    if(strstr(buffer, "GET /?action=snapshot") != NULL || strstr(buffer, "GET /snapshot") != NULL) {
+         req.type = A_SNAPSHOT;
+         query_suffixed = 255;
+         #ifdef MANAGMENT
+@@ -1232,7 +1232,7 @@ void *client_thread(void *arg)
+         }
+         #endif
+ 	#endif
+-    } else if(strstr(buffer, "GET /?action=stream") != NULL) {
++    } else if(strstr(buffer, "GET /?action=stream") != NULL || strstr(buffer, "GET /stream") != NULL) {
+         req.type = A_STREAM;
+         query_suffixed = 255;
+         #ifdef MANAGMENT
+@@ -1431,6 +1431,7 @@ void *client_thread(void *arg)
+      * parse the rest of the HTTP-request
+      * the end of the request-header is marked by a single, empty line with "\r\n"
+      */
++    char cookies[1024]={0};
+     do {
+         memset(buffer, 0, sizeof(buffer));
+ 
+@@ -1440,6 +1441,7 @@ void *client_thread(void *arg)
+             return NULL;
+         }
+ 
++
+         if(strstr(buffer, "User-Agent: ") != NULL) {
+             req.client = strdup(buffer + strlen("User-Agent: "));
+         } else if(strstr(buffer, "Authorization: Basic ") != NULL) {
+@@ -1447,9 +1449,16 @@ void *client_thread(void *arg)
+             decodeBase64(req.credentials);
+             DBG("username:password: %s\n", req.credentials);
+         }
++        if(strstr(buffer, "Cookie: ")!=NULL){
++        	strcpy(cookies,buffer);
++        }
+ 
+     } while(cnt > 2 && !(buffer[0] == '\r' && buffer[1] == '\n'));
+ 
++    if(!checkSession(cookies)){
++    	goto error;
++    }
++
+     /* check for username and password if parameter -c was given */
+     if(lcfd.pc->conf.credentials != NULL) {
+         if(req.credentials == NULL || strcmp(lcfd.pc->conf.credentials, req.credentials) != 0) {
+@@ -1589,7 +1598,9 @@ void *client_thread(void *arg)
+         DBG("unknown request\n");
+     }
+ 
+-    close(lcfd.fd);
++error:
++
++	close(lcfd.fd);
+     free_request(&req);
+ 
+     DBG("leaving HTTP client thread\n");
+@@ -1769,6 +1780,7 @@ void *server_thread(void *arg)
+                     free(pcfd);
+                     continue;
+                 }
++
+                 pthread_detach(client);
+             }
+         }
+@@ -2238,3 +2250,68 @@ void check_JSON_string(char *string, uns
+         }
+     }
+ }
++
++int checkSession(char* cookies){
++	register size_t position;
++	char  *aux, name[20],value[100], *sid;
++	FILE *fp;
++	char filename[100];
++	//cookies = cgi_unescape_special_chars(cookies);
++	cookies=cookies+8;// omit "Cookie: "
++	int i;
++	for(i=0;i<strlen(cookies);i++){
++		if(*(cookies+i)=='\r') *(cookies+i)='\0';
++		if(*(cookies+i)=='\n') *(cookies+i)='\0';
++	}
++
++	aux = cookies;
++
++	while (cookies) {
++		position = 0;
++		while (*aux++ != '=')
++			position++;
++
++		strncpy(name, cookies, position);
++		name[position]='\0';
++
++		position = 0;
++		cookies = aux;
++		if ((strchr(cookies, ';')) == NULL) {
++			aux = NULL;
++			position = strlen(cookies);
++		}
++		else {
++			while (*aux++ != ';')
++				position++;
++			// Eliminate the blank space after ';'
++			aux++;
++		}
++
++		strncpy(value, cookies, position);
++		value[position] = '\0';
++		//we found a cookies name and value, let's check if it is like CGISID=1hL1nqxsh1oZhH2apdlW41bibQptQfmQo7QCod5EejBnT
++		if(strcmp(name,"CGISID")==0){
++			if(strlen(value)!=0){
++				sid=value;
++				sprintf(filename,"/tmp/cgisess_%s",sid);
++				fp = fopen(filename, "r");
++				if (errno == ENOENT) {
++					//session file doesn't exist
++					return 0;
++				}
++				//we found the file, let's read
++				char buf[100];//let's assume size of each line is small than 100
++				while( fgets(buf,100,fp)){
++					if(strstr(buf,"logged=1")){
++						//yes, logged in
++						fclose(fp);
++						return 1;
++					}
++				}
++			}
++		}
++		cookies = aux;
++	}
++	return 0;
++}
++
