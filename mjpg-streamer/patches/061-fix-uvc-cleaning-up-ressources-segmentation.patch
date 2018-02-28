@@ -1,0 +1,13 @@
+--- a/plugins/input_uvc/input_uvc.c
++++ b/plugins/input_uvc/input_uvc.c
+@@ -384,7 +384,9 @@ Return Value: always 0
+ int input_stop(int id)
+ {
+     DBG("will cancel camera thread #%02d\n", id);
+-    pthread_cancel(cams[id].threadID);
++	/* Don't need to send cancel signal to thread, it will clean up
++	 * resource via pthread_cleanup_pop with a nonzero execute argument */
++    /* pthread_cancel(cams[id].threadID); */
+     return 0;
+ }
+ 
