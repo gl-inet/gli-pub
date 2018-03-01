@@ -11,3 +11,26 @@
      return 0;
  }
  
+--- a/plugins/input_uvc/v4l2uvc.c
++++ b/plugins/input_uvc/v4l2uvc.c
+@@ -539,6 +539,9 @@ int uvcGrab(struct vdIn *vd)
+         memcpy (vd->tmpbuffer + HEADERFRAME1, dht_data, sizeof(dht_data));
+         memcpy (vd->tmpbuffer + HEADERFRAME1 + sizeof(dht_data), vd->mem[buf.index] + HEADERFRAME1, (buf.bytesused - HEADERFRAME1));
+         */
++        if(buf.bytesused > vd->framesizeIn) {
++			buf.bytesused = vd->framesizeIn;
++		}
+ 
+         memcpy(vd->tmpbuffer, vd->mem[buf.index], buf.bytesused);
+ 	vd->tmpbytesused = buf.bytesused;
+--- a/plugins/output_http/output_http.c
++++ b/plugins/output_http/output_http.c
+@@ -197,7 +197,7 @@ int output_stop(int id)
+ {
+ 
+     DBG("will cancel server thread #%02d\n", id);
+-    pthread_cancel(servers[id].threadID);
++    /* pthread_cancel(servers[id].threadID); */
+ 
+     return 0;
+ }
