@@ -1,0 +1,11 @@
+--- a/upnpc.c
++++ b/upnpc.c
+@@ -571,7 +571,7 @@ int main(int argc, char ** argv)
+ 
+ 	if( rootdescurl
+ 	  || (devlist = upnpDiscover(2000, multicastif, minissdpdpath,
+-	                             0/*sameport*/, ipv6, &error)))
++	                             1/*sameport*/, ipv6, &error)))
+ 	{
+ 		struct UPNPDev * device;
+ 		struct UPNPUrls urls;
