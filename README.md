@@ -1,6 +1,7 @@
-These are packages that was not update in openwrt-cc feeds or that cannot compile.  
+What is it?  
+===========  
 
-The nodejs version is v6.9.1, this only compiles on AR series with a patch for toolchain. This doesn't work in MT series.  
+This repo is maintained by GL.iNet team. It includes packages which are missing in openwrt feeds or version is too old.  
 
 This folder will be updated from time to time.  
 
