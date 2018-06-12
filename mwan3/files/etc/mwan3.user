@@ -14,3 +14,127 @@
 #      <disconnected> Is only called by mwan3track if tracking has failed
 # $INTERFACE	Name of the interface which went up or down (e.g. "wan" or "wwan")
 # $DEVICE	Physical device name which interface went up or down (e.g. "eth0" or "wwan0")
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+
+refresh_route() {
+	local ip
+	local gw
+	local iface
+	local device
+	local server="$1"
+
+	[ -n "$(echo $server | egrep '[0-9]{1,3}(\.[0-9]{1,3}){3}')" ] || return 0
+
+	iface=$(cat /var/run/mwan3/indicator 2>/dev/null || echo "unknown")
+	[ "$iface" = "unknown" ] && return 0
+
+	for ip in $(ip route list | awk '{print $1}' | egrep '[0-9]{1,3}(\.[0-9]{1,3}){3}'); do
+		[ "$ip" = "$server" ] && ip route del $ip 2>/dev/null
+	done
+
+	network_get_device device $iface
+	network_get_gateway gw $iface
+
+	[ -n "$device" -a -n "$gw" ] && {
+		ip route add $server via $gw dev $device 2>/dev/null
+	}
+
+	[ -n "$device" -a -z "$gw" ] && {
+		ip route add $(ip route show dev $device | sed "s/default/$server/g" | head -n 1) 2>/dev/null || true
+	}
+}
+
+wg_running() {
+	local enable
+
+	eanble=$(uci get wireguard.@proxy[0].enable 2>/dev/null)
+	if [ "$eanble" = "1" ]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+peers_func()
+{
+        local name
+	local main_server
+
+	main_server=$(uci get wireguard.@proxy[0].main_server 2>/dev/null)
+
+        config_get name $1 "name"
+
+	if [ -n "$name" -a "$name" = "$main_server" ]; then
+        	config_get end_point $1 "end_point"
+	else
+		continue
+	fi
+}
+
+wg_main() {
+	local ip
+	local host
+	local end_point
+
+
+	config_load wireguard
+        config_foreach peers_func peers
+
+	[ -n "$end_point" ] || return 0
+
+	host=$(echo $end_point | cut -d ":" -f1)
+	ip=$(resolveip $host | head -n 1)
+
+	[ -n "$ip" ] && {
+		refresh_route $ip
+	}
+}
+
+ovpn_running() {
+	local enable
+
+	eanble=$(uci get glconfig.openvpn.enable 2>/dev/null)
+	if [ "$eanble" = "1" ]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+ovpn_main() {
+	local ovpn
+	local host
+	local ip
+
+
+	if [ "$ACTION" = "connected" ]; then
+		for pid in $(pgrep -f "openvpn"); do
+			kill -SIGHUP $pid
+		done
+	fi
+
+	ovpn=$(uci get glconfig.openvpn.ovpn 2>/dev/null)
+	[ -n "$ovpn" ] || return 0
+
+	host=$(grep "^remote " $ovpn 2>/dev/null | awk '{print $2}')
+	ip=$(resolveip $host | head -n 1)
+	[ -n "$ip" ] && {
+		refresh_route $ip
+	}
+}
+
+main() {
+	local pid
+
+	if wg_running; then
+		wg_main
+	elif ovpn_running; then
+		ovpn_main
+	fi
+
+	exit 0
+}
+
+main
