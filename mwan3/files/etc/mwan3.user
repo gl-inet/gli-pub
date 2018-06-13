@@ -46,7 +46,7 @@ refresh_route() {
 	}
 }
 
-wg_running() {
+wg_enable() {
 	local enable
 
 	eanble=$(uci get wireguard.@proxy[0].enable 2>/dev/null)
@@ -92,7 +92,7 @@ wg_main() {
 	}
 }
 
-ovpn_running() {
+ovpn_enable() {
 	local enable
 
 	eanble=$(uci get glconfig.openvpn.enable 2>/dev/null)
@@ -128,9 +128,9 @@ ovpn_main() {
 main() {
 	local pid
 
-	if wg_running; then
+	if wg_enable; then
 		wg_main
-	elif ovpn_running; then
+	elif ovpn_enable; then
 		ovpn_main
 	fi
 
