@@ -90,6 +90,7 @@ case "$ACTION" in
 	;;
 esac
 
+mwan3_export_ipt_rules
 mwan3_unlock
 
 exit 0

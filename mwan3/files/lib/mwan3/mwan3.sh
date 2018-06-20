@@ -20,6 +20,26 @@ MM_BLACKHOLE=""
 MMX_UNREACHABLE=""
 MM_UNREACHABLE=""
 
+mwan3_export_ipt_rules() {
+	local fwi
+
+	fwi=$(uci get firewall.mwan3.path 2>/dev/null)
+	[ -n "$fwi" ] || return 0
+	cat <<-CAT >$fwi
+	iptables-save -c | grep -v "mwan3" | iptables-restore -c
+	iptables-restore -n <<-EOF
+	$(iptables-save | grep -E "mwan3|^\*|^COMMIT" |\
+		sed -e "s/^-A \(OUTPUT\|PREROUTING\)/-I \1 1/")
+	EOF
+	CAT
+}
+
+mwan3_flush_ipt_rules() {
+	local fwi
+
+	fwi=$(uci get firewall.mwan3.path 2>/dev/null)
+	[ -n "$fwi" ] && echo '# firewall include file' >$fwi
+}
 
 # counts how many bits are set to 1
 # n&(n-1) clears the lowest bit set to 1

@@ -204,6 +204,7 @@ stop()
 
 	mwan3_lock_clean
 	rm -rf $MWAN3_STATUS_DIR $MWAN3TRACK_STATUS_DIR
+	mwan3_flush_ipt_rules
 
 	src_ip=$(uci_get_state mwan3 globals src_ip)
 	[ "${src_ip}" = "" ] || {
