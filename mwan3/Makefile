@@ -45,6 +45,16 @@ endef
 define Build/Compile
 endef
 
+define Package/mwan3/prerm
+#!/bin/sh
+s=firewall.mwan3
+uci get "$$s" >/dev/null || exit 0
+uci batch <<-EOF
+	delete $$s
+	commit firewall
+EOF
+endef
+
 define Package/mwan3/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
