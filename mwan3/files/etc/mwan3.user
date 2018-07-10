@@ -85,7 +85,7 @@ wg_main() {
 	[ -n "$end_point" ] || return 0
 
 	host=$(echo $end_point | cut -d ":" -f1)
-	ip=$(resolveip $host | head -n 1)
+	ip=$(resolveip $host | egrep '[0-9]{1,3}(\.[0-9]{1,3}){3}' | head -n 1)
 
 	[ -n "$ip" ] && {
 		refresh_route $ip
@@ -119,7 +119,7 @@ ovpn_main() {
 	[ -n "$ovpn" ] || return 0
 
 	host=$(grep "^remote " $ovpn 2>/dev/null | awk '{print $2}')
-	ip=$(resolveip $host | head -n 1)
+	ip=$(resolveip $host | egrep '[0-9]{1,3}(\.[0-9]{1,3}){3}' | head -n 1)
 	[ -n "$ip" ] && {
 		refresh_route $ip
 	}
