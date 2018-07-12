@@ -3,7 +3,8 @@
 . /lib/functions.sh
 . /lib/mwan3/common.sh
 
-LOG="logger -t $(basename "$0")[$$] -p"
+# LOG="logger -t $(basename "$0")[$$] -p"
+LOG="true"
 INTERFACE=""
 DEVICE=""
 
