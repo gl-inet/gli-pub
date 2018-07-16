@@ -82,6 +82,9 @@ case "$ACTION" in
 	;;
 	ifdown)
 		mwan3_set_iface_hotplug_state $INTERFACE "offline"
+		mwan3_delete_iface_iptables $INTERFACE        
+		mwan3_delete_iface_rules $INTERFACE        
+		mwan3_delete_iface_route $INTERFACE
 		mwan3_delete_iface_ipset_entries $INTERFACE
 		mwan3_track_signal $INTERFACE $DEVICE
 		mwan3_set_policies_iptables
