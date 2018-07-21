@@ -141,10 +141,8 @@ define Package/unbound/install
 		$(PKG_INSTALL_DIR)/usr/sbin/unbound-checkconf \
 		$(1)/usr/sbin/
 	$(INSTALL_DIR) $(1)/etc/unbound
-	$(INSTALL_DATA) \
-		$(PKG_INSTALL_DIR)/etc/unbound/unbound.conf \
-		$(1)/etc/unbound/unbound.conf
 	$(INSTALL_DATA) ./files/root.key $(1)/etc/unbound/root.key
+	$(INSTALL_DATA) ./files/unbound.conf $(1)/etc/unbound/unbound.conf
 	$(INSTALL_DATA) ./files/unbound_ext.conf $(1)/etc/unbound/unbound_ext.conf
 	$(INSTALL_DATA) ./files/unbound_srv.conf $(1)/etc/unbound/unbound_srv.conf
 	$(INSTALL_DIR) $(1)/etc/config

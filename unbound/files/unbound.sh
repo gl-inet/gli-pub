@@ -1078,6 +1078,9 @@ unbound_uci() {
   hostnm=$( uci_get system.@system[0].hostname | awk '{print tolower($0)}' )
   UNBOUND_TXT_HOSTNAME=${hostnm:-thisrouter}
 
+  config_get_bool enable "$cfg" enable
+  [ "$enable" = "1" ] || exit 0
+
   config_get_bool UNBOUND_B_SLAAC6_MAC "$cfg" dhcp4_slaac6 0
   config_get_bool UNBOUND_B_DNS64      "$cfg" dns64 0
   config_get_bool UNBOUND_B_EXT_STATS  "$cfg" extended_stats 0
