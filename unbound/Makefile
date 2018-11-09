@@ -109,16 +109,21 @@ define Package/libunbound/description
   This package contains the Unbound shared library.
 endef
 
+
 CONFIGURE_ARGS += \
 	--disable-dsa \
 	--disable-gost \
 	--enable-allsymbols \
-	--enable-tfo-client \
 	--enable-tfo-server \
 	--with-libexpat="$(STAGING_DIR)/usr" \
 	--with-ssl="$(STAGING_DIR)/usr" \
 	--with-pidfile=/var/run/unbound.pid \
 	--with-user=unbound
+
+ifndef CONFIG_TARGET_ipq806x
+  CONFIGURE_ARGS += \
+	--enable-tfo-client
+endif
 
 define Package/unbound/conffiles
 /etc/config/unbound
