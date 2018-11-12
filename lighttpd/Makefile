@@ -105,6 +105,10 @@ $(call Build/Configure/Default)
 	echo "#define HAVE_PCRE_H 1" >>$(PKG_BUILD_DIR)/config.h
 endef
 
+ifeq ($(CONFIG_GCC_VERSION_4_8),y)
+  TARGET_CFLAGS += -std=c99
+endif
+
 define Package/lighttpd/conffiles
 /etc/lighttpd/lighttpd.conf
 endef
