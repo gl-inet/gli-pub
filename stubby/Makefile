@@ -13,10 +13,11 @@ PKG_LICENSE_FILES:=COPYING
 PKG_MAINTAINER:=David Mora <iamperson347+public@gmail.com>
 
 PKG_SOURCE_PROTO:=git
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://github.com/getdnsapi/$(PKG_NAME)
 PKG_SOURCE_VERSION:=8fb853ac8d6148fd9b53fdcbc107ecd375071ec5
-PKG_MIRROR_HASH:=db736f4a728970d2441009ac19716d6129700eab3f441a5db3a0c26d41bf162c
+# PKG_MIRROR_HASH:=db736f4a728970d2441009ac19716d6129700eab3f441a5db3a0c26d41bf162c
 
 PKG_FIXUP:=autoreconf
 
@@ -24,7 +25,13 @@ PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/stubby/Default
+ifdef CONFIG_TARGET_ipq806x
+ifeq ($(CONFIG_GCC_VERSION_4_8),y)
+  TARGET_CFLAGS += -std=gnu99
+endif
+endif
+
+define Package/stubby
 	TITLE:=stubby
 	URL:=https://dnsprivacy.org/wiki/display/DP/DNS+Privacy+Daemon+-+Stubby
 endef
