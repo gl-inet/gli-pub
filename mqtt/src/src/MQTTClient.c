@@ -1573,7 +1573,7 @@ int MQTTClient_unsubscribe(MQTTClient handle, const char* topic)
 }
 
 
-int MQTTClient_publish(MQTTClient handle, const char* topicName, int payloadlen, void* payload,
+int MQTTClient_publish(MQTTClient handle, const char* topicName, unsigned long payloadlen, void* payload,
 							 int qos, int retained, MQTTClient_deliveryToken* deliveryToken)
 {
 	int rc = MQTTCLIENT_SUCCESS;
