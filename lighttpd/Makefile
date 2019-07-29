@@ -35,6 +35,12 @@ define Package/lighttpd/Default
   MAINTAINER:=W. Michael Petullo <mike@flyn.org>
 endef
 
+ifdef CONFIG_TARGET_ipq806x
+ifeq ($(CONFIG_GCC_VERSION_4_8),y)
+  TARGET_CFLAGS += -std=gnu99
+endif
+endif
+
 define Package/lighttpd
   $(call Package/lighttpd/Default)
   MENU:=1
