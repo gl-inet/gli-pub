@@ -1,0 +1,36 @@
+--- a/src/fw_iptables.c	2019-04-23 19:11:43.644880753 +0800
++++ b/src/fw_iptables.c	2019-04-23 19:12:56.071969538 +0800
+@@ -504,7 +504,7 @@
+ 		/* CHAIN_TRUSTED_TO_ROUTER, append the "trusted-users-to-router" ruleset */
+ 		rc |= _iptables_append_ruleset("filter", "trusted-users-to-router", CHAIN_TRUSTED_TO_ROUTER);
+ 		/* CHAIN_TRUSTED_TO_ROUTER, any packets not matching that ruleset  REJECT */
+-		rc |= iptables_do_command("-t filter -A " CHAIN_TRUSTED_TO_ROUTER " -j REJECT --reject-with icmp-port-unreachable");
++		//rc |= iptables_do_command("-t filter -A " CHAIN_TRUSTED_TO_ROUTER " -j REJECT --reject-with icmp-port-unreachable");
+ 	}
+ 
+ 	/* CHAIN_TO_ROUTER, other packets: */
+@@ -520,7 +520,7 @@
+ 		/* CHAIN_TO_ROUTER, append the "users-to-router" ruleset */
+ 		rc |= _iptables_append_ruleset("filter", "users-to-router", CHAIN_TO_ROUTER);
+ 		/* everything else, REJECT */
+-		rc |= iptables_do_command("-t filter -A " CHAIN_TO_ROUTER " -j REJECT --reject-with icmp-port-unreachable");
++		//rc |= iptables_do_command("-t filter -A " CHAIN_TO_ROUTER " -j REJECT --reject-with icmp-port-unreachable");
+ 
+ 	}
+ 
+@@ -562,7 +562,7 @@
+ 		/* CHAIN_TRUSTED, append the "trusted-users" ruleset */
+ 		rc |= _iptables_append_ruleset("filter", "trusted-users", CHAIN_TRUSTED);
+ 		/* CHAIN_TRUSTED, any packets not matching that ruleset  REJECT */
+-		rc |= iptables_do_command("-t filter -A " CHAIN_TRUSTED " -j REJECT --reject-with icmp-port-unreachable");
++		//rc |= iptables_do_command("-t filter -A " CHAIN_TRUSTED " -j REJECT --reject-with icmp-port-unreachable");
+ 	}
+ 
+ 
+@@ -582,7 +582,7 @@
+ 		/* CHAIN_AUTHENTICATED, append the "authenticated-users" ruleset */
+ 		rc |= _iptables_append_ruleset("filter", "authenticated-users", CHAIN_AUTHENTICATED);
+ 		/* CHAIN_AUTHENTICATED, any packets not matching that ruleset  REJECT */
+-		rc |= iptables_do_command("-t filter -A " CHAIN_AUTHENTICATED " -j REJECT --reject-with icmp-port-unreachable");
++		//rc |= iptables_do_command("-t filter -A " CHAIN_AUTHENTICATED " -j REJECT --reject-with icmp-port-unreachable");
+ 	}
