@@ -20,6 +20,7 @@ PKG_FIXUP:=autoreconf
 
 PKG_INSTALL:=1
 
+
 PKG_CONFIG_DEPENDS:= \
 	CONFIG_GETDNS_ENABLE_STUB_ONLY \
 	CONFIG_GETDNS_ENABLE_IDN_LIBIDN2 
@@ -60,6 +61,8 @@ CONFIGURE_ARGS += \
 		--without-libidn \
 		$(if $(CONFIG_GETDNS_ENABLE_IDN_LIBIDN2), , --without-libidn2 ) \
 		--with-ssl="$(STAGING_DIR)/usr" \
+
+CONFIGURE_VARS += LIBBSD_LIBS=-lc
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/getdns/
