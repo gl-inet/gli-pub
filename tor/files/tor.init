@@ -14,16 +14,16 @@ start_service() {
 
 	[ -f /var/run/tor.pid ] || {
 		touch /var/run/tor.pid
-		chown tor:tor /var/run/tor.pid
+		chown root:root /var/run/tor.pid
 	}
 	[ -d /var/lib/tor ] || {
 		mkdir -m 0755 -p /var/lib/tor
 		chmod 0700 /var/lib/tor
-		chown tor:tor /var/lib/tor
+		chown root:root /var/lib/tor
 	}
 	[ -d /var/log/tor ] || {
 		mkdir -m 0755 -p /var/log/tor
-		chown tor:tor /var/log/tor
+		chown root:root /var/log/tor
 	}
 	[ -f  /var/lib/tor/control.log  ] && {
 		rm /var/lib/tor/control.log
