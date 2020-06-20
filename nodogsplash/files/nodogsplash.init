@@ -11,8 +11,8 @@
 # Comment by that author: Could be better, but it's working as expected)
 #
 
-START=95
-STOP=95
+START=80
+STOP=80
 
 USE_PROCD=1
 
