@@ -1,0 +1,3 @@
+config unbound
+	option enable '0'
+	option manual_conf '1'
