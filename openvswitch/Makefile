@@ -122,8 +122,8 @@ ovs_kmod_openvswitch-intree_depends:=\
 	  +(IPV6&&(LINUX_4_9||LINUX_4_14)):kmod-nf-conntrack6 \
 	  +(LINUX_4_9||LINUX_4_14):kmod-gre \
 	  +(IPV6&&(LINUX_4_9||LINUX_4_14)):kmod-gre6 \
-	  +(!LINUX_4_9&&!LINUX_4_14):kmod-udptunnel4 \
-	  +(!LINUX_4_9&&!LINUX_4_14):kmod-ipt-conntrack-extra \
+	  +(!LINUX_4_9):kmod-udptunnel4 \
+	  +(!LINUX_4_9):kmod-ipt-conntrack-extra \
 
 ovs_kmod_openvswitch-intree_files:= $(ovs_kmod_intree_dir)/openvswitch.ko
 $(eval $(call OvsKmodPackageTemplate,openvswitch-intree))
