@@ -9,6 +9,7 @@ ELSE ()
   SET(CERTDIR $ENV{TRAVIS_BUILD_DIR}/test/ssl)
 ENDIF ()
 
+
 IF (PAHO_WITH_SSL)
     SET(OPENSSL_SEARCH_PATH "" CACHE PATH "Directory containing OpenSSL libraries and includes")
 
@@ -18,6 +19,11 @@ IF (PAHO_WITH_SSL)
 
     IF (WIN32)
       SET(OPENSSL_SEARCH_PATH "C:/OpenSSL-Win64")
+      IF (DEFINED ENV{PAHO_WINDOWS_BUILD_BIT})
+        IF ($ENV{PAHO_WINDOWS_BUILD_BIT} STREQUAL "x86")
+          SET(OPENSSL_SEARCH_PATH "C:/OpenSSL-Win32")
+        ENDIF ()
+      ENDIF ()
     ENDIF ()
 
     FIND_PATH(OPENSSL_INCLUDE_DIR openssl/ssl.h
@@ -30,6 +36,33 @@ IF (PAHO_WITH_SSL)
         ${OPENSSL_INCLUDE_DIR}
     )
 ENDIF ()
+
+IF (WIN32)
+    SET(LIBS_SYSTEM ws2_32)
+ELSEIF (UNIX)
+    IF(CMAKE_SYSTEM_NAME MATCHES "Linux")
+        SET(LIBS_SYSTEM c dl pthread)
+    ELSEIF (CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
+        SET(LIBS_SYSTEM compat pthread)
+    ELSE()
+        SET(LIBS_SYSTEM c pthread)
+    ENDIF()
+ENDIF()
+
+ADD_EXECUTABLE(
+	thread
+	thread.c ../src/Thread.c
+)
+
+SET_TARGET_PROPERTIES(
+  thread PROPERTIES
+  COMPILE_DEFINITIONS "NOSTACKTRACE;NOLOG_MESSAGES" 
+)
+
+TARGET_LINK_LIBRARIES(
+	thread 
+	${LIBS_SYSTEM}
+)
 
 ADD_EXECUTABLE(
 	test1
@@ -95,6 +128,61 @@ SET_TESTS_PROPERTIES(
 	PROPERTIES TIMEOUT 540
 )
 
+ADD_EXECUTABLE(
+	test15
+	test15.c
+)
+
+TARGET_LINK_LIBRARIES(
+	test15
+	paho-mqtt3c
+)
+
+ADD_TEST(
+	NAME test15-1-single-thread-client
+	COMMAND "test15" "--test_no" "1" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test15-2-multithread-callbacks
+	COMMAND "test15" "--test_no" "2" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test15-3-connack-return-codes
+	COMMAND "test15" "--test_no" "3" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test15-4-client-persistence
+	COMMAND "test15" "--test_no" "4" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test15-5-disconnect-with-quiesce
+	COMMAND "test15" "--test_no" "5" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test15-6-connlost-will-message
+	COMMAND "test15" "--test_no" "6" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test15-7-connlost-binary-will-message
+	COMMAND "test15" "--test_no" "7" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+SET_TESTS_PROPERTIES(
+	test15-1-single-thread-client
+	test15-2-multithread-callbacks
+	test15-3-connack-return-codes
+	test15-4-client-persistence
+	test15-5-disconnect-with-quiesce
+	test15-6-connlost-will-message
+	test15-7-connlost-binary-will-message
+	PROPERTIES TIMEOUT 540
+)
 
 ADD_EXECUTABLE(
 	test2
@@ -177,6 +265,11 @@ ADD_TEST(
 	COMMAND test3 "--test_no" "10" "--hostname" ${MQTT_SSL_HOSTNAME} "--client_key"	"${CERTDIR}/client.pem" "--server_key"	"${CERTDIR}/test-root-ca.crt"
 )
 
+#ADD_TEST(
+#	NAME test3-6-psk-ssl-auth
+#	COMMAND test3 "--test_no" "11" "--hostname" ${MQTT_SSL_HOSTNAME}
+#)
+
 SET_TESTS_PROPERTIES(
 	test3-1-ssl-conn-to-non-SSL-broker
 	test3-2as-mutual-ssl-auth-single-thread
@@ -188,6 +281,7 @@ SET_TESTS_PROPERTIES(
 	test3-3b-broker-auth-client-missing-broker-cert
 	test3-4s-broker-auth-accept-invalid-certificate-single-thread
 	test3-4m-broker-auth-accept-invalid-certificate-multi-thread
+#	test3-6-psk-ssl-auth
 	PROPERTIES TIMEOUT 540
 )
 
@@ -255,6 +349,68 @@ SET_TESTS_PROPERTIES(
 	PROPERTIES TIMEOUT 540
 )
 
+ADD_EXECUTABLE(
+	test45
+	test45.c
+)
+
+TARGET_LINK_LIBRARIES(
+	test45
+	paho-mqtt3a
+)
+
+ADD_TEST(
+	NAME test45-1-basic-connect-subscribe-receive
+	COMMAND test45 "--test_no" "1" "--connection" ${MQTT_TEST_BROKER}
+)
+
+ADD_TEST(
+	NAME test45-2-connect-timeout
+	COMMAND test45 "--test_no" "2" "--connection" ${MQTT_TEST_BROKER}
+)
+
+ADD_TEST(
+	NAME test45-3-multiple-client-objs-simultaneous-working
+	COMMAND test45 "--test_no" "3" "--connection" ${MQTT_TEST_BROKER}
+)
+
+ADD_TEST(
+	NAME test45-4-send-receive-big-messages
+	COMMAND test45 "--test_no" "4" "--connection" ${MQTT_TEST_BROKER}
+)
+
+ADD_TEST(
+	NAME test45-5-connack-return-codes
+	COMMAND test45 "--test_no" "5" "--connection" ${MQTT_TEST_BROKER}
+)
+
+ADD_TEST(
+	NAME test45-6-ha-connections
+	COMMAND test45 "--test_no" "6" "--connection" ${MQTT_TEST_BROKER}
+)
+
+ADD_TEST(
+	NAME test45-7-pending-tokens
+	COMMAND test45 "--test_no" "7" --verbose "--connection" ${MQTT_TEST_BROKER} 
+)
+
+ADD_TEST(
+	NAME test45-8-incomplete-commands-requests
+	COMMAND test45 "--test_no" "8" "--connection" ${MQTT_TEST_BROKER}
+)
+
+SET_TESTS_PROPERTIES(
+	test45-1-basic-connect-subscribe-receive
+	test45-2-connect-timeout
+	test45-3-multiple-client-objs-simultaneous-working
+	test45-4-send-receive-big-messages
+	test45-5-connack-return-codes
+	test45-6-ha-connections
+	test45-7-pending-tokens
+	test45-8-incomplete-commands-requests
+	PROPERTIES TIMEOUT 540
+)
+
 IF (PAHO_WITH_SSL)
 	ADD_EXECUTABLE(
 		test5
@@ -306,6 +462,41 @@ ADD_TEST(
 	COMMAND test5 "--test_no" "8" "--hostname" ${MQTT_SSL_HOSTNAME} "--client_key" 	"${CERTDIR}/client.pem" "--server_key"	"${CERTDIR}/test-root-ca.crt"
 )
 
+ADD_TEST(
+	NAME test5-6-multiple-connections
+	COMMAND test5 "--test_no" "9" "--hostname" ${MQTT_SSL_HOSTNAME} "--client_key" 	"${CERTDIR}/client.pem" "--server_key"	"${CERTDIR}/test-root-ca.crt"
+)
+
+ADD_TEST(
+	NAME test5-7-big-messages
+	COMMAND test5 "--test_no" "10" "--hostname" ${MQTT_SSL_HOSTNAME} "--client_key" 	"${CERTDIR}/client.pem" "--server_key"	"${CERTDIR}/test-root-ca.crt"
+)
+
+#ADD_TEST(
+#	NAME test5-8-psk-ssl-auth
+#	COMMAND test5 "--test_no" "11" "--hostname" ${MQTT_SSL_HOSTNAME}
+#)
+
+IF (NOT WIN32)
+# OpenSSL CApath tests rely on Unix-type filesystem - can it work on Windows?
+ADD_TEST(
+	NAME test5-5-server-verify-with-capath
+	COMMAND test5 "--test_no" "12" "--hostname" ${MQTT_SSL_HOSTNAME} "--client_key" 	"${CERTDIR}/client.pem" "--capath"	"${CERTDIR}/capath"
+)
+
+ADD_TEST(
+	NAME test5-6-server-verify-with-capath
+	COMMAND test5 "--test_no" "13" "--hostname" ${MQTT_SSL_HOSTNAME} "--client_key" 	"${CERTDIR}/client.pem" "--capath"	"${CERTDIR}/notexist"
+)
+
+SET_TESTS_PROPERTIES(
+	test5-5-server-verify-with-capath
+	test5-6-server-verify-with-capath
+	PROPERTIES TIMEOUT 540
+)
+ENDIF ()
+
+
 SET_TESTS_PROPERTIES(
 	test5-1-ssl-connection-to-no-SSL-server
 	test5-2a-multual-ssl-auth-certificates-in-place
@@ -315,6 +506,9 @@ SET_TESTS_PROPERTIES(
 	test5-3a-server-auth-server-cert-in-client-store
 	test5-3b-server-auth-client-missing-broker-cert
 	test5-4-accept-invalid-certificates
+	test5-6-multiple-connections
+	test5-7-big-messages
+#	test5-8-psk-ssl-auth
 	PROPERTIES TIMEOUT 540
 )
 
@@ -448,6 +642,192 @@ SET_TESTS_PROPERTIES(
 )
 
 ADD_EXECUTABLE(
+	test95
+	test95.c
+)
+
+TARGET_LINK_LIBRARIES(
+	test95
+	paho-mqtt3a
+)
+
+ADD_TEST(
+	NAME test95-1-offline-buffering-send-disconnected
+	COMMAND test95 "--test_no" "1" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test95-2-offline-buffering-send-disconnected-serverURIs
+	COMMAND test95 "--test_no" "2" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test95-3-offline-buffering-auto-reconnect
+	COMMAND test95 "--test_no" "3" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test95-4-offline-buffering-auto-reconnect-serverURIs
+	COMMAND test95 "--test_no" "4" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test95-5-offline-buffering-max-buffered
+	COMMAND test95 "--test_no" "5" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test95-6-offline-buffering-max-buffered-binary-will
+	COMMAND test95 "--test_no" "6" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+SET_TESTS_PROPERTIES(
+	test95-1-offline-buffering-send-disconnected
+	test95-2-offline-buffering-send-disconnected-serverURIs
+	test95-3-offline-buffering-auto-reconnect
+	test95-4-offline-buffering-auto-reconnect-serverURIs
+	test95-5-offline-buffering-max-buffered
+	test95-6-offline-buffering-max-buffered-binary-will
+	PROPERTIES TIMEOUT 540
+)
+
+ADD_EXECUTABLE(
+	test10
+	test10.c
+)
+
+TARGET_LINK_LIBRARIES(
+	test10
+	paho-mqtt3c
+)
+
+ADD_TEST(
+	NAME test10-1-client_topic_aliases
+	COMMAND "test10" "--test_no" "1" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test10-2-server_topic_aliases
+	COMMAND "test10" "--test_no" "2" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test10-3-subscription_ids
+	COMMAND "test10" "--test_no" "3" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test10-4-flow_control
+	COMMAND "test10" "--test_no" "4" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test10-5-error_handling
+	COMMAND "test10" "--test_no" "5" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test10-6-qos_1_2_errors
+	COMMAND "test10" "--test_no" "6" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test10-7-request_response
+	COMMAND "test10" "--test_no" "7" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test10-8-subscribe_options
+	COMMAND "test10" "--test_no" "8" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test10-9-shared_subscriptions
+	COMMAND "test10" "--test_no" "9" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+SET_TESTS_PROPERTIES(
+	test10-1-client_topic_aliases
+	test10-2-server_topic_aliases
+	test10-3-subscription_ids
+	test10-4-flow_control
+	test10-5-error_handling
+	test10-6-qos_1_2_errors
+	test10-7-request_response
+	test10-8-subscribe_options
+	test10-9-shared_subscriptions
+	PROPERTIES TIMEOUT 540
+)
+
+ADD_EXECUTABLE(
+	test11
+	test11.c
+)
+
+TARGET_LINK_LIBRARIES(
+	test11
+	paho-mqtt3a
+)
+
+ADD_TEST(
+	NAME test11-1-client_topic_aliases
+	COMMAND "test11" "--test_no" "1" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test11-2-server_topic_aliases
+	COMMAND "test11" "--test_no" "2" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test11-3-subscription_ids
+	COMMAND "test11" "--test_no" "3" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test11-4-flow_control
+	COMMAND "test11" "--test_no" "4" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test11-5-error_handling
+	COMMAND "test11" "--test_no" "5" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test11-6-qos_1_2_errors
+	COMMAND "test11" "--test_no" "6" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test11-7-request_response
+	COMMAND "test11" "--test_no" "7" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test11-8-subscribe_options
+	COMMAND "test11" "--test_no" "8" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+ADD_TEST(
+	NAME test11-9-shared_subscriptions
+	COMMAND "test11" "--test_no" "9" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+SET_TESTS_PROPERTIES(
+	test11-1-client_topic_aliases
+	test11-2-server_topic_aliases
+	test11-3-subscription_ids
+	test11-4-flow_control
+	test11-5-error_handling
+	test11-6-qos_1_2_errors
+	test11-7-request_response
+	test11-8-subscribe_options
+	test11-9-shared_subscriptions
+	PROPERTIES TIMEOUT 540
+)
+
+ADD_EXECUTABLE(
 	test_issue373
 	test_issue373.c
 )
@@ -455,4 +835,24 @@ ADD_EXECUTABLE(
 TARGET_LINK_LIBRARIES(
 	test_issue373
 	paho-mqtt3a
+)
+
+ADD_EXECUTABLE(
+        test_sync_session_present
+        test_sync_session_present.c
+)
+
+TARGET_LINK_LIBRARIES(
+        test_sync_session_present
+        paho-mqtt3c
+)
+
+ADD_TEST(
+        NAME test_sync_session_present-1-client_session_present_after_reconnect
+        COMMAND "test_sync_session_present" "--test_no" "1" "--connection" ${MQTT_TEST_BROKER} "--proxy_connection" ${MQTT_TEST_PROXY}
+)
+
+SET_TESTS_PROPERTIES(
+        test_sync_session_present-1-client_session_present_after_reconnect
+        PROPERTIES TIMEOUT 540
 )

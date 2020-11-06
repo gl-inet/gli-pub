@@ -1,5 +1,5 @@
 #*******************************************************************************
-#  Copyright (c) 2015, 2017 logi.cals GmbH and others
+#  Copyright (c) 2015, 2018 logi.cals GmbH and others
 #
 #  All rights reserved. This program and the accompanying materials
 #  are made available under the terms of the Eclipse Public License v1.0
@@ -13,6 +13,7 @@
 #  Contributors:
 #     Rainer Poisel - initial version
 #     Ian Craggs (IBM Corp.) - merge master
+#     Ian Craggs - update for MQTTV5 support
 #*******************************************************************************/
 
 # Note: on OS X you should install XCode and the associated command-line tools
@@ -46,6 +47,11 @@ SET(common_src
     SocketBuffer.c
     Heap.c
     LinkedList.c
+    MQTTProperties.c
+    MQTTReasonCodes.c
+    Base64.c
+    SHA1.c
+    WebSocket.c
     )
 
 IF (WIN32)
@@ -59,7 +65,6 @@ ELSEIF (UNIX)
         SET(LIBS_SYSTEM c pthread)
     ENDIF()
 ENDIF()
-
 
 ## common compilation for libpaho-mqtt3c and libpaho-mqtt3a
 ADD_LIBRARY(common_obj OBJECT ${common_src})
@@ -97,7 +102,7 @@ IF (PAHO_BUILD_STATIC)
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 ENDIF()
 
-INSTALL(FILES MQTTAsync.h MQTTClient.h MQTTClientPersistence.h
+INSTALL(FILES MQTTAsync.h MQTTClient.h MQTTClientPersistence.h MQTTProperties.h MQTTReasonCodes.h MQTTSubscribeOpts.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 IF (PAHO_WITH_SSL)
@@ -109,14 +114,23 @@ IF (PAHO_WITH_SSL)
 
     IF (WIN32)
       SET(OPENSSL_SEARCH_PATH "C:/OpenSSL-Win64")
+      SET(OPENSSL_SEARCH_LIB_PATH "${OPENSSL_SEARCH_PATH}/lib64")
+      IF (DEFINED ENV{PAHO_WINDOWS_BUILD_BIT})
+        IF ($ENV{PAHO_WINDOWS_BUILD_BIT} STREQUAL "x86")
+          SET(OPENSSL_SEARCH_PATH "C:/OpenSSL-Win32")
+          SET(OPENSSL_SEARCH_LIB_PATH "${OPENSSL_SEARCH_PATH}/lib32")
+        ENDIF ()
+      ENDIF ()
+    ELSE()
+      SET(OPENSSL_SEARCH_LIB_PATH "${OPENSSL_SEARCH_PATH}/lib64")
     ENDIF ()
 
     FIND_PATH(OPENSSL_INCLUDE_DIR openssl/ssl.h
         HINTS ${OPENSSL_SEARCH_PATH}/include)
     FIND_LIBRARY(OPENSSL_LIB NAMES ssl libssl ssleay32
-        HINTS ${OPENSSL_SEARCH_PATH}/lib ${OPENSSL_SEARCH_PATH}/lib64)
+        HINTS ${OPENSSL_SEARCH_PATH}/lib ${OPENSSL_SEARCH_LIB_PATH})
     FIND_LIBRARY(OPENSSLCRYPTO_LIB NAMES crypto libcrypto libeay32
-      	HINTS ${OPENSSL_SEARCH_PATH}/lib ${OPENSSL_SEARCH_PATH}/lib64)
+      	HINTS ${OPENSSL_SEARCH_PATH}/lib ${OPENSSL_SEARCH_LIB_PATH})
 
     MESSAGE(STATUS "OpenSSL hints: ${OPENSSL_SEARCH_PATH}")
     MESSAGE(STATUS "OpenSSL headers found at ${OPENSSL_INCLUDE_DIR}")
@@ -163,3 +177,21 @@ IF (PAHO_WITH_SSL)
             ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
     ENDIF()
 ENDIF()
+
+# Base64 test
+ADD_EXECUTABLE( Base64Test EXCLUDE_FROM_ALL Base64.c Base64.h )
+TARGET_COMPILE_DEFINITIONS( Base64Test PUBLIC "-DBASE64_TEST" )
+IF (PAHO_WITH_SSL)
+	ADD_EXECUTABLE( Base64TestOpenSSL EXCLUDE_FROM_ALL Base64.c Base64.h )
+	TARGET_LINK_LIBRARIES( Base64TestOpenSSL ${OPENSSL_LIB} ${OPENSSLCRYPTO_LIB} )
+	TARGET_COMPILE_DEFINITIONS( Base64TestOpenSSL PUBLIC "-DBASE64_TEST -DOPENSSL=1" )
+ENDIF (PAHO_WITH_SSL)
+
+# SHA1 test
+ADD_EXECUTABLE( Sha1Test EXCLUDE_FROM_ALL SHA1.c SHA1.h )
+TARGET_COMPILE_DEFINITIONS( Sha1Test PUBLIC "-DSHA1_TEST" )
+IF (PAHO_WITH_SSL)
+	ADD_EXECUTABLE( Sha1TestOpenSSL EXCLUDE_FROM_ALL SHA1.c SHA1.h )
+	TARGET_LINK_LIBRARIES( Sha1TestOpenSSL ${OPENSSL_LIB} ${OPENSSLCRYPTO_LIB} )
+	TARGET_COMPILE_DEFINITIONS( Sha1TestOpenSSL PUBLIC "-DSHA1_TEST -DOPENSSL=1" )
+ENDIF (PAHO_WITH_SSL)

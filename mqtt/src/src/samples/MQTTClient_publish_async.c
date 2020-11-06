@@ -19,8 +19,8 @@
 #include <string.h>
 #include "MQTTClient.h"
 
-#define ADDRESS     "tcp://localhost:1883"
-#define CLIENTID    "ExampleClientPub"
+#define ADDRESS     "tcp://120.24.80.203:1883"
+#define CLIENTID    "e4956e400000"
 #define TOPIC       "MQTT Examples"
 #define PAYLOAD     "Hello World!"
 #define QOS         1
@@ -72,6 +72,8 @@ int main(int argc, char* argv[])
         MQTTCLIENT_PERSISTENCE_NONE, NULL);
     conn_opts.keepAliveInterval = 20;
     conn_opts.cleansession = 1;
+    conn_opts.username = "glinet";
+    conn_opts.password = "Goodlife1";
 
     MQTTClient_setCallbacks(client, NULL, connlost, msgarrvd, delivered);
 
@@ -85,11 +87,17 @@ int main(int argc, char* argv[])
     pubmsg.qos = QOS;
     pubmsg.retained = 0;
     deliveredtoken = 0;
-    MQTTClient_publishMessage(client, TOPIC, &pubmsg, &token);
-    printf("Waiting for publication of %s\n"
-            "on topic %s for client with ClientID: %s\n",
-            PAYLOAD, TOPIC, CLIENTID);
-    while(deliveredtoken != token);
+    // MQTTClient_publishMessage(client, TOPIC, &pubmsg, &token);
+    // printf("Waiting for publication of %s\n"
+    //         "on topic %s for client with ClientID: %s\n",
+    //         PAYLOAD, TOPIC, CLIENTID);
+    // while(deliveredtoken != token);
+
+    int ch;
+    do {
+        ch = getchar();
+    } while (ch != 'Q' && ch != 'q');
+
     MQTTClient_disconnect(client, 10000);
     MQTTClient_destroy(&client);
     return rc;

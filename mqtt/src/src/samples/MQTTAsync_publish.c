@@ -29,7 +29,7 @@
 #include <OsWrapper.h>
 #endif
 
-#define ADDRESS     "tcp://iot.eclipse.org:1883"
+#define ADDRESS     "tcp://mqtt.eclipse.org:1883"
 #define CLIENTID    "ExampleClientPub"
 #define TOPIC       "MQTT Examples"
 #define PAYLOAD     "Hello World!"
@@ -106,7 +106,7 @@ void onConnect(void* context, MQTTAsync_successData* response)
 	opts.context = client;
 
 	pubmsg.payload = PAYLOAD;
-	pubmsg.payloadlen = strlen(PAYLOAD);
+	pubmsg.payloadlen = (int)strlen(PAYLOAD);
 	pubmsg.qos = QOS;
 	pubmsg.retained = 0;
 	deliveredtoken = 0;

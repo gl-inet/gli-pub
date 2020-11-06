@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mqtt
 PKG_REFV:=2
-PKG_VERSION:=3.0.1
+PKG_VERSION:=1.3.1
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -37,14 +37,14 @@ define Build/InstallDev
 	$(CP) $(PKG_BUILD_DIR)/src/*.h $(1)/usr/include/
 	$(INSTALL_DIR) $(1)/usr/lib/
 	$(CP) $(PKG_BUILD_DIR)/build/output/lib* $(1)/usr/lib/
-	$(CP) $(PKG_BUILD_DIR)/build/output/MQTTVersion $(1)/usr/lib/
+	#$(CP) $(PKG_BUILD_DIR)/build/output/MQTTVersion $(1)/usr/lib/
 endef
 
 define Package/mqtt/install
 	$(INSTALL_DIR) $(1)/usr/bin/
 	$(INSTALL_DIR) $(1)/usr/lib/
 	$(CP) $(PKG_BUILD_DIR)/build/output/lib* $(1)/usr/lib/
-	$(CP) $(PKG_BUILD_DIR)/build/output/MQTTVersion $(1)/usr/lib/
+	#$(CP) $(PKG_BUILD_DIR)/build/output/MQTTVersion $(1)/usr/lib/
 endef
 
 $(eval $(call BuildPackage,mqtt))

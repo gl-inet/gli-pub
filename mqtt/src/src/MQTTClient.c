@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2018 IBM Corp.
+ * Copyright (c) 2009, 2019 IBM Corp.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
@@ -34,6 +34,7 @@
  *    Ian Craggs - waitforCompletion fix #240
  *    Ian Craggs - check for NULL SSL options #334
  *    Ian Craggs - allocate username/password buffers #431
+ *    Ian Craggs - MQTT 5.0 support
  *******************************************************************************/
 
 /**
@@ -71,9 +72,11 @@
 #include "OsWrapper.h"
 
 #define URI_TCP "tcp://"
+#define URI_WS "ws://"
+#define URI_WSS "wss://"
 
 #include "VersionInfo.h"
-
+#include "WebSocket.h"
 
 const char *client_timestamp_eye = "MQTTClientV3_Timestamp " BUILD_TIMESTAMP;
 const char *client_version_eye = "MQTTClientV3_Version " CLIENT_VERSION;
@@ -174,7 +177,7 @@ void MQTTClient_init(void)
 #define WINAPI
 #endif
 
-static volatile int initialized = 0;
+static volatile int library_initialized = 0;
 static List* handles = NULL;
 static int running = 0;
 static int tostop = 0;
@@ -195,11 +198,23 @@ typedef struct
 #if defined(OPENSSL)
 	int ssl;
 #endif
+	int websocket;
 	Clients* c;
 	MQTTClient_connectionLost* cl;
 	MQTTClient_messageArrived* ma;
 	MQTTClient_deliveryComplete* dc;
 	void* context;
+
+	MQTTClient_disconnected* disconnected;
+	void* disconnected_context; /* the context to be associated with the disconnected callback*/
+
+	MQTTClient_published* published;
+	void* published_context; /* the context to be associated with the disconnected callback*/
+
+#if 0
+	MQTTClient_authHandle* auth_handle;
+	void* auth_handle_context; /* the context to be associated with the authHandle callback*/
+#endif
 
 	sem_type connect_sem;
 	int rc; /* getsockopt return code in connect */
@@ -209,6 +224,13 @@ typedef struct
 	MQTTPacket* pack;
 
 } MQTTClients;
+
+struct props_rc_parms
+{
+	MQTTClients* m;
+	MQTTProperties* properties;
+	enum MQTTReasonCodes reasonCode;
+};
 
 void MQTTClient_sleep(long milliseconds)
 {
@@ -233,7 +255,7 @@ START_TIME_TYPE MQTTClient_start_clock(void)
 START_TIME_TYPE MQTTClient_start_clock(void)
 {
 	static struct timespec start;
-	clock_gettime(CLOCK_REALTIME, &start);
+	clock_gettime(CLOCK_MONOTONIC, &start);
 	return start;
 }
 #else
@@ -241,7 +263,11 @@ START_TIME_TYPE MQTTClient_start_clock(void)
 START_TIME_TYPE MQTTClient_start_clock(void)
 {
 	static struct timeval start;
-	gettimeofday(&start, NULL);
+	static struct timespec start_ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &start_ts);
+	start.tv_sec = start_ts.tv_sec;
+	start.tv_usec = start_ts.tv_nsec / 1000;
 	return start;
 }
 #endif
@@ -258,7 +284,7 @@ long MQTTClient_elapsed(struct timespec start)
 {
 	struct timespec now, res;
 
-	clock_gettime(CLOCK_REALTIME, &now);
+	clock_gettime(CLOCK_MONOTONIC, &now);
 	ntimersub(now, start, res);
 	return (res.tv_sec)*1000L + (res.tv_nsec)/1000000L;
 }
@@ -266,8 +292,11 @@ long MQTTClient_elapsed(struct timespec start)
 long MQTTClient_elapsed(struct timeval start)
 {
 	struct timeval now, res;
+	static struct timespec now_ts;
 
-	gettimeofday(&now, NULL);
+	clock_gettime(CLOCK_MONOTONIC, &now_ts);
+	now.tv_sec = now_ts.tv_sec;
+	now.tv_usec = now_ts.tv_nsec / 1000;
 	timersub(&now, &start, &res);
 	return (res.tv_sec)*1000 + (res.tv_usec)/1000;
 }
@@ -283,14 +312,16 @@ static int clientSockCompare(void* a, void* b);
 static thread_return_type WINAPI connectionLost_call(void* context);
 static thread_return_type WINAPI MQTTClient_run(void* n);
 static void MQTTClient_stop(void);
-static void MQTTClient_closeSession(Clients* client);
+static void MQTTClient_closeSession(Clients* client, enum MQTTReasonCodes reason, MQTTProperties* props);
 static int MQTTClient_cleanSession(Clients* client);
-static int MQTTClient_connectURIVersion(
+static MQTTResponse MQTTClient_connectURIVersion(
 	MQTTClient handle, MQTTClient_connectOptions* options,
 	const char* serverURI, int MQTTVersion,
-	START_TIME_TYPE start, long millisecsTimeout);
-static int MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectOptions* options, const char* serverURI);
-static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int internal, int stop);
+	START_TIME_TYPE start, long millisecsTimeout,
+	MQTTProperties* connectProperties, MQTTProperties* willProperties);
+static MQTTResponse MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectOptions* options, const char* serverURI,
+	MQTTProperties* connectProperties, MQTTProperties* willProperties);
+static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int internal, int stop, enum MQTTReasonCodes, MQTTProperties*);
 static int MQTTClient_disconnect_internal(MQTTClient handle, int timeout);
 static void MQTTClient_retry(void);
 static MQTTPacket* MQTTClient_cycle(int* sock, unsigned long timeout, int* rc);
@@ -300,8 +331,8 @@ static void MQTTProtocol_checkPendingWrites(void);
 static void MQTTClient_writeComplete(int socket, int rc);
 
 
-int MQTTClient_create(MQTTClient* handle, const char* serverURI, const char* clientId,
-		int persistence_type, void* persistence_context)
+int MQTTClient_createWithOptions(MQTTClient* handle, const char* serverURI, const char* clientId,
+		int persistence_type, void* persistence_context, MQTTClient_createOptions* options)
 {
 	int rc = 0;
 	MQTTClients *m = NULL;
@@ -324,9 +355,10 @@ int MQTTClient_create(MQTTClient* handle, const char* serverURI, const char* cli
 	if (strstr(serverURI, "://") != NULL)
 	{
 		if (strncmp(URI_TCP, serverURI, strlen(URI_TCP)) != 0
+		 && strncmp(URI_WS, serverURI, strlen(URI_WS)) != 0
 #if defined(OPENSSL)
             && strncmp(URI_SSL, serverURI, strlen(URI_SSL)) != 0
-
+		 && strncmp(URI_WSS, serverURI, strlen(URI_WSS)) != 0
 #endif
 			)
 		{
@@ -335,7 +367,13 @@ int MQTTClient_create(MQTTClient* handle, const char* serverURI, const char* cli
 		}
 	}
 
-	if (!initialized)
+	if (options && (strncmp(options->struct_id, "MQCO", 4) != 0 || options->struct_version != 0))
+	{
+		rc = MQTTCLIENT_BAD_STRUCTURE;
+		goto exit;
+	}
+
+	if (!library_initialized)
 	{
 		#if defined(HEAP_H)
 			Heap_initialize();
@@ -348,21 +386,38 @@ int MQTTClient_create(MQTTClient* handle, const char* serverURI, const char* cli
 #if defined(OPENSSL)
 		SSLSocket_initialize();
 #endif
-		initialized = 1;
+		library_initialized = 1;
 	}
+
 	m = malloc(sizeof(MQTTClients));
 	*handle = m;
 	memset(m, '\0', sizeof(MQTTClients));
 	if (strncmp(URI_TCP, serverURI, strlen(URI_TCP)) == 0)
 		serverURI += strlen(URI_TCP);
+	else if (strncmp(URI_WS, serverURI, strlen(URI_WS)) == 0)
+	{
+		serverURI += strlen(URI_WS);
+		m->websocket = 1;
+	}
 	else if (strncmp(URI_SSL, serverURI, strlen(URI_SSL)) == 0)
 	{
 #if defined(OPENSSL)
 		serverURI += strlen(URI_SSL);
 		m->ssl = 1;
 #else
-        rc = MQTTCLIENT_SSL_NOT_SUPPORTED;
-        goto exit;
+		rc = MQTTCLIENT_SSL_NOT_SUPPORTED;
+		goto exit;
+#endif
+	}
+	else if (strncmp(URI_WSS, serverURI, strlen(URI_WSS)) == 0)
+	{
+#if defined(OPENSSL)
+		serverURI += strlen(URI_WSS);
+		m->ssl = 1;
+		m->websocket = 1;
+#else
+		rc = MQTTCLIENT_SSL_NOT_SUPPORTED;
+		goto exit;
 #endif
 	}
 	m->serverURI = MQTTStrdup(serverURI);
@@ -371,6 +426,7 @@ int MQTTClient_create(MQTTClient* handle, const char* serverURI, const char* cli
 	m->c = malloc(sizeof(Clients));
 	memset(m->c, '\0', sizeof(Clients));
 	m->c->context = m;
+	m->c->MQTTVersion = (options) ? options->MQTTVersion : MQTTVERSION_DEFAULT;
 	m->c->outboundMsgs = ListInitialize();
 	m->c->inboundMsgs = ListInitialize();
 	m->c->messageQueue = ListInitialize();
@@ -398,24 +454,29 @@ exit:
 }
 
 
+int MQTTClient_create(MQTTClient* handle, const char* serverURI, const char* clientId,
+		int persistence_type, void* persistence_context)
+{
+	return MQTTClient_createWithOptions(handle, serverURI, clientId, persistence_type,
+		persistence_context, NULL);
+}
+
+
 static void MQTTClient_terminate(void)
 {
 	FUNC_ENTRY;
 	MQTTClient_stop();
-	if (initialized)
+	if (library_initialized)
 	{
 		ListFree(bstate->clients);
 		ListFree(handles);
 		handles = NULL;
-		Socket_outTerminate();
-#if defined(OPENSSL)
-		SSLSocket_terminate();
-#endif
+		WebSocket_terminate();
 		#if defined(HEAP_H)
 			Heap_terminate();
 		#endif
 		Log_terminate();
-		initialized = 0;
+		library_initialized = 0;
 	}
 	FUNC_EXIT;
 }
@@ -432,6 +493,7 @@ static void MQTTClient_emptyMessageQueue(Clients* client)
 		{
 			qEntry* qe = (qEntry*)(current->content);
 			free(qe->topicName);
+			MQTTProperties_free(&qe->msg->properties);
 			free(qe->msg->payload);
 			free(qe->msg);
 		}
@@ -487,6 +549,7 @@ exit:
 void MQTTClient_freeMessage(MQTTClient_message** message)
 {
 	FUNC_ENTRY;
+	MQTTProperties_free(&(*message)->properties);
 	free((*message)->payload);
 	free(*message);
 	*message = NULL;
@@ -498,6 +561,20 @@ void MQTTClient_free(void* memory)
 {
 	FUNC_ENTRY;
 	free(memory);
+	FUNC_EXIT;
+}
+
+
+DLLExport void MQTTResponse_free(MQTTResponse response)
+{
+	FUNC_ENTRY;
+	if (response.properties)
+	{
+		if (response.reasonCodeCount > 0 && response.reasonCodes)
+			free(response.reasonCodes);
+		MQTTProperties_free(response.properties);
+		free(response.properties);
+	}
 	FUNC_EXIT;
 }
 
@@ -550,6 +627,111 @@ static thread_return_type WINAPI connectionLost_call(void* context)
 }
 
 
+int MQTTClient_setDisconnected(MQTTClient handle, void* context, MQTTClient_disconnected* disconnected)
+{
+	int rc = MQTTCLIENT_SUCCESS;
+	MQTTClients* m = handle;
+
+	FUNC_ENTRY;
+	Thread_lock_mutex(mqttclient_mutex);
+
+	if (m == NULL || m->c->connect_state != NOT_IN_PROGRESS)
+		rc = MQTTCLIENT_FAILURE;
+	else
+	{
+		m->disconnected_context = context;
+		m->disconnected = disconnected;
+	}
+
+	Thread_unlock_mutex(mqttclient_mutex);
+	FUNC_EXIT_RC(rc);
+	return rc;
+}
+
+
+
+/**
+ * Wrapper function to call disconnected on a separate thread.  A separate thread is needed to allow the
+ * disconnected function to make API calls (e.g. connect)
+ * @param context a pointer to the relevant client
+ * @return thread_return_type standard thread return value - not used here
+ */
+static thread_return_type WINAPI call_disconnected(void* context)
+{
+	struct props_rc_parms* pr = (struct props_rc_parms*)context;
+
+	(*(pr->m->disconnected))(pr->m->disconnected_context, pr->properties, pr->reasonCode);
+	MQTTProperties_free(pr->properties);
+	free(pr->properties);
+	free(pr);
+	return 0;
+}
+
+
+int MQTTClient_setPublished(MQTTClient handle, void* context, MQTTClient_published* published)
+{
+	int rc = MQTTCLIENT_SUCCESS;
+	MQTTClients* m = handle;
+
+	FUNC_ENTRY;
+	Thread_lock_mutex(mqttclient_mutex);
+
+	if (m == NULL || m->c->connect_state != NOT_IN_PROGRESS)
+		rc = MQTTCLIENT_FAILURE;
+	else
+	{
+		m->published_context = context;
+		m->published = published;
+	}
+
+	Thread_unlock_mutex(mqttclient_mutex);
+	FUNC_EXIT_RC(rc);
+	return rc;
+}
+
+
+#if 0
+int MQTTClient_setHandleAuth(MQTTClient handle, void* context, MQTTClient_handleAuth* auth_handle)
+{
+	int rc = MQTTCLIENT_SUCCESS;
+	MQTTClients* m = handle;
+
+	FUNC_ENTRY;
+	Thread_lock_mutex(mqttclient_mutex);
+
+	if (m == NULL || m->c->connect_state != NOT_IN_PROGRESS)
+		rc = MQTTCLIENT_FAILURE;
+	else
+	{
+		m->auth_handle_context = context;
+		m->auth_handle = auth_handle;
+	}
+
+	Thread_unlock_mutex(mqttclient_mutex);
+	FUNC_EXIT_RC(rc);
+	return rc;
+}
+
+
+/**
+ * Wrapper function to call authHandle on a separate thread.  A separate thread is needed to allow the
+ * disconnected function to make API calls (e.g. MQTTClient_auth)
+ * @param context a pointer to the relevant client
+ * @return thread_return_type standard thread return value - not used here
+ */
+static thread_return_type WINAPI call_auth_handle(void* context)
+{
+	struct props_rc_parms* pr = (struct props_rc_parms*)context;
+
+	(*(pr->m->auth_handle))(pr->m->auth_handle_context, pr->properties, pr->reasonCode);
+	MQTTProperties_free(pr->properties);
+	free(pr->properties);
+	free(pr);
+	return 0;
+}
+#endif
+
+
 /* This is the thread function that handles the calling of callback functions if set */
 static thread_return_type WINAPI MQTTClient_run(void* n)
 {
@@ -592,14 +774,16 @@ static thread_return_type WINAPI MQTTClient_run(void* n)
 				MQTTClient_disconnect_internal(m, 0);
 			else
 			{
-				if (m->c->connect_state == 2 && !Thread_check_sem(m->connect_sem))
+				if (m->c->connect_state == SSL_IN_PROGRESS)
 				{
 					Log(TRACE_MIN, -1, "Posting connect semaphore for client %s", m->c->clientID);
+					m->c->connect_state = NOT_IN_PROGRESS;
 					Thread_post_sem(m->connect_sem);
 				}
-				if (m->c->connect_state == 3 && !Thread_check_sem(m->connack_sem))
+				if (m->c->connect_state == WAIT_FOR_CONNACK)
 				{
 					Log(TRACE_MIN, -1, "Posting connack semaphore for client %s", m->c->clientID);
+					m->c->connect_state = NOT_IN_PROGRESS;
 					Thread_post_sem(m->connack_sem);
 				}
 			}
@@ -637,7 +821,7 @@ static thread_return_type WINAPI MQTTClient_run(void* n)
 			}
 			if (pack)
 			{
-				if (pack->header.bits.type == CONNACK && !Thread_check_sem(m->connack_sem))
+				if (pack->header.bits.type == CONNACK)
 				{
 					Log(TRACE_MIN, -1, "Posting connack semaphore for client %s", m->c->clientID);
 					m->pack = pack;
@@ -655,8 +839,40 @@ static thread_return_type WINAPI MQTTClient_run(void* n)
 					m->pack = pack;
 					Thread_post_sem(m->unsuback_sem);
 				}
+				else if (m->c->MQTTVersion >= MQTTVERSION_5)
+				{
+					if (pack->header.bits.type == DISCONNECT && m->disconnected)
+					{
+						struct props_rc_parms* dp;
+						Ack* disc = (Ack*)pack;
+
+						dp = malloc(sizeof(struct props_rc_parms));
+						dp->m = m;
+						dp->reasonCode = disc->rc;
+						dp->properties = malloc(sizeof(MQTTProperties));
+						*(dp->properties) = disc->properties;
+						free(disc);
+						MQTTClient_disconnect1(m, 10, 0, 1, MQTTREASONCODE_SUCCESS, NULL);
+						Log(TRACE_MIN, -1, "Calling disconnected for client %s", m->c->clientID);
+						Thread_start(call_disconnected, dp);
+					}
+#if 0
+					if (pack->header.bits.type == AUTH && m->auth_handle)
+					{
+						struct props_rc_parms dp;
+						Ack* disc = (Ack*)pack;
+
+						dp.m = m;
+						dp.properties = &disc->properties;
+						dp.reasonCode = disc->rc;
+						free(pack);
+						Log(TRACE_MIN, -1, "Calling auth_handle for client %s", m->c->clientID);
+						Thread_start(call_auth_handle, &dp);
+					}
+#endif
+				}
 			}
-			else if (m->c->connect_state == 1 && !Thread_check_sem(m->connect_sem))
+			else if (m->c->connect_state == TCP_IN_PROGRESS)
 			{
 				int error;
 				socklen_t len = sizeof(error);
@@ -664,23 +880,35 @@ static thread_return_type WINAPI MQTTClient_run(void* n)
 				if ((m->rc = getsockopt(m->c->net.socket, SOL_SOCKET, SO_ERROR, (char*)&error, &len)) == 0)
 					m->rc = error;
 				Log(TRACE_MIN, -1, "Posting connect semaphore for client %s rc %d", m->c->clientID, m->rc);
+				printf("Posting connect semaphore for client %s rc %d", m->c->clientID, m->rc);
+				m->c->connect_state = NOT_IN_PROGRESS;
 				Thread_post_sem(m->connect_sem);
 			}
 #if defined(OPENSSL)
-			else if (m->c->connect_state == 2 && !Thread_check_sem(m->connect_sem))
+			else if (m->c->connect_state == SSL_IN_PROGRESS)
 			{
-				rc = SSLSocket_connect(m->c->net.ssl, m->c->net.socket,
-						m->serverURI, m->c->sslopts->verify);
+				rc = m->c->sslopts->struct_version >= 3 ?
+					SSLSocket_connect(m->c->net.ssl, m->c->net.socket, m->serverURI, 
+						m->c->sslopts->verify, m->c->sslopts->ssl_error_cb, m->c->sslopts->ssl_error_context) :
+					SSLSocket_connect(m->c->net.ssl, m->c->net.socket, m->serverURI,
+						m->c->sslopts->verify, NULL, NULL);
 				if (rc == 1 || rc == SSL_FATAL)
 				{
-					if (rc == 1 && !m->c->cleansession && m->c->session == NULL)
+					if (rc == 1 && (m->c->cleansession == 0 && m->c->cleanstart == 0) && m->c->session == NULL)
 						m->c->session = SSL_get1_session(m->c->net.ssl);
 					m->rc = rc;
 					Log(TRACE_MIN, -1, "Posting connect semaphore for SSL client %s rc %d", m->c->clientID, m->rc);
+					m->c->connect_state = NOT_IN_PROGRESS;
 					Thread_post_sem(m->connect_sem);
 				}
 			}
 #endif
+			else if (m->c->connect_state == WEBSOCKET_IN_PROGRESS)
+			{
+				Log(TRACE_MIN, -1, "Posting websocket handshake for client %s rc %d", m->c->clientID, m->rc);
+				m->c->connect_state = WAIT_FOR_CONNACK;
+				Thread_post_sem(m->connect_sem);
+			}
 		}
 	}
 	run_id = 0;
@@ -706,7 +934,7 @@ static void MQTTClient_stop(void)
 			/* find out how many handles are still connected */
 			while (ListNextElement(handles, &current))
 			{
-				if (((MQTTClients*)(current->content))->c->connect_state > 0 ||
+				if (((MQTTClients*)(current->content))->c->connect_state > NOT_IN_PROGRESS ||
 						((MQTTClients*)(current->content))->c->connected)
 					++conn_count;
 			}
@@ -743,7 +971,7 @@ int MQTTClient_setCallbacks(MQTTClient handle, void* context, MQTTClient_connect
 	FUNC_ENTRY;
 	Thread_lock_mutex(mqttclient_mutex);
 
-	if (m == NULL || ma == NULL || m->c->connect_state != 0)
+	if (m == NULL || ma == NULL || m->c->connect_state != NOT_IN_PROGRESS)
 		rc = MQTTCLIENT_FAILURE;
 	else
 	{
@@ -759,7 +987,7 @@ int MQTTClient_setCallbacks(MQTTClient handle, void* context, MQTTClient_connect
 }
 
 
-static void MQTTClient_closeSession(Clients* client)
+static void MQTTClient_closeSession(Clients* client, enum MQTTReasonCodes reason, MQTTProperties* props)
 {
 	FUNC_ENTRY;
 	client->good = 0;
@@ -767,8 +995,10 @@ static void MQTTClient_closeSession(Clients* client)
 	if (client->net.socket > 0)
 	{
 		if (client->connected)
-			MQTTPacket_send_disconnect(&client->net, client->clientID);
+			MQTTPacket_send_disconnect(client, reason, props);
 		Thread_lock_mutex(socket_mutex);
+		WebSocket_close(&client->net, WebSocket_CLOSE_NORMAL, NULL);
+
 #if defined(OPENSSL)
 		SSLSocket_close(&client->net);
 #endif
@@ -780,9 +1010,9 @@ static void MQTTClient_closeSession(Clients* client)
 #endif
 	}
 	client->connected = 0;
-	client->connect_state = 0;
+	client->connect_state = NOT_IN_PROGRESS;
 
-	if (client->cleansession)
+	if (client->MQTTVersion < MQTTVERSION_5 && client->cleansession)
 		MQTTClient_cleanSession(client);
 	FUNC_EXIT;
 }
@@ -809,10 +1039,12 @@ void Protocol_processPublication(Publish* publish, Clients* client)
 {
 	qEntry* qe = NULL;
 	MQTTClient_message* mm = NULL;
+	MQTTClient_message initialized = MQTTClient_message_initializer;
 
 	FUNC_ENTRY;
 	qe = malloc(sizeof(qEntry));
 	mm = malloc(sizeof(MQTTClient_message));
+	memcpy(mm, &initialized, sizeof(MQTTClient_message));
 
 	qe->msg = mm;
 
@@ -840,6 +1072,9 @@ void Protocol_processPublication(Publish* publish, Clients* client)
 		mm->dup = publish->header.bits.dup;
 	mm->msgid = publish->msgId;
 
+	if (publish->MQTTVersion >= 5)
+		mm->properties = MQTTProperties_copy(&publish->properties);
+
 	ListAppend(client->messageQueue, qe, sizeof(qe) + sizeof(mm) + mm->payloadlen + strlen(qe->topicName)+1);
 #if !defined(NO_PERSISTENCE)
 	if (client->persistence)
@@ -849,14 +1084,16 @@ void Protocol_processPublication(Publish* publish, Clients* client)
 }
 
 
-static int MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOptions* options, const char* serverURI, int MQTTVersion,
-	START_TIME_TYPE start, long millisecsTimeout)
+static MQTTResponse MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOptions* options, const char* serverURI, int MQTTVersion,
+	START_TIME_TYPE start, long millisecsTimeout, MQTTProperties* connectProperties, MQTTProperties* willProperties)
 {
 	MQTTClients* m = handle;
 	int rc = SOCKET_ERROR;
 	int sessionPresent = 0;
+	MQTTResponse resp = MQTTResponse_initializer;
 
 	FUNC_ENTRY;
+	resp.reasonCode = SOCKET_ERROR;
 	if (m->ma && !running)
 	{
 		Thread_start(MQTTClient_run, handle);
@@ -870,20 +1107,20 @@ static int MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOpt
 
 	Log(TRACE_MIN, -1, "Connecting to serverURI %s with MQTT version %d", serverURI, MQTTVersion);
 #if defined(OPENSSL)
-	rc = MQTTProtocol_connect(serverURI, m->c, m->ssl, MQTTVersion);
+	rc = MQTTProtocol_connect(serverURI, m->c, m->ssl, m->websocket, MQTTVersion, connectProperties, willProperties);
 #else
-	rc = MQTTProtocol_connect(serverURI, m->c, MQTTVersion);
+	rc = MQTTProtocol_connect(serverURI, m->c, m->websocket, MQTTVersion, connectProperties, willProperties);
 #endif
 	if (rc == SOCKET_ERROR)
 		goto exit;
 
-	if (m->c->connect_state == 0)
+	if (m->c->connect_state == NOT_IN_PROGRESS)
 	{
 		rc = SOCKET_ERROR;
 		goto exit;
 	}
 
-	if (m->c->connect_state == 1) /* TCP connect started - wait for completion */
+	if (m->c->connect_state == TCP_IN_PROGRESS) /* TCP connect started - wait for completion */
 	{
 		Thread_unlock_mutex(mqttclient_mutex);
 		MQTTClient_waitfor(handle, CONNECT, &rc, millisecsTimeout - MQTTClient_elapsed(start));
@@ -893,28 +1130,30 @@ static int MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOpt
 			rc = SOCKET_ERROR;
 			goto exit;
 		}
-
 #if defined(OPENSSL)
 		if (m->ssl)
 		{
 			int port;
-			char* hostname;
+			size_t hostname_len;
+			const char *topic;
 			int setSocketForSSLrc = 0;
 
-			hostname = MQTTProtocol_addressPort(m->serverURI, &port);
-			setSocketForSSLrc = SSLSocket_setSocketForSSL(&m->c->net, m->c->sslopts, hostname);
-			if (hostname != m->serverURI)
-				free(hostname);
+			hostname_len = MQTTProtocol_addressPort(m->serverURI, &port, &topic);
+			setSocketForSSLrc = SSLSocket_setSocketForSSL(&m->c->net, m->c->sslopts,
+				m->serverURI, hostname_len);
 
 			if (setSocketForSSLrc != MQTTCLIENT_SUCCESS)
 			{
 				if (m->c->session != NULL)
 					if ((rc = SSL_set_session(m->c->net.ssl, m->c->session)) != 1)
 						Log(TRACE_MIN, -1, "Failed to set SSL session with stored data, non critical");
-				rc = SSLSocket_connect(m->c->net.ssl, m->c->net.socket,
-						m->serverURI, m->c->sslopts->verify);
+				rc = m->c->sslopts->struct_version >= 3 ?
+					SSLSocket_connect(m->c->net.ssl, m->c->net.socket, m->serverURI,
+						m->c->sslopts->verify, m->c->sslopts->ssl_error_cb, m->c->sslopts->ssl_error_context) :
+					SSLSocket_connect(m->c->net.ssl, m->c->net.socket, m->serverURI,
+						m->c->sslopts->verify, NULL, NULL);
 				if (rc == TCPSOCKET_INTERRUPTED)
-					m->c->connect_state = 2;  /* the connect is still in progress */
+					m->c->connect_state = SSL_IN_PROGRESS;  /* the connect is still in progress */
 				else if (rc == SSL_FATAL)
 				{
 					rc = SOCKET_ERROR;
@@ -922,15 +1161,25 @@ static int MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOpt
 				}
 				else if (rc == 1)
 				{
-					rc = MQTTCLIENT_SUCCESS;
-					m->c->connect_state = 3;
-					if (MQTTPacket_send_connect(m->c, MQTTVersion) == SOCKET_ERROR)
+					if (m->websocket)
 					{
-						rc = SOCKET_ERROR;
-						goto exit;
+						m->c->connect_state = WEBSOCKET_IN_PROGRESS;
+						rc = WebSocket_connect(&m->c->net,m->serverURI);
+						if ( rc == SOCKET_ERROR )
+							goto exit;
 					}
-					if (!m->c->cleansession && m->c->session == NULL)
-						m->c->session = SSL_get1_session(m->c->net.ssl);
+					else
+					{
+						rc = MQTTCLIENT_SUCCESS;
+						m->c->connect_state = WAIT_FOR_CONNACK;
+						if (MQTTPacket_send_connect(m->c, MQTTVersion, connectProperties, willProperties) == SOCKET_ERROR)
+						{
+							rc = SOCKET_ERROR;
+							goto exit;
+						}
+						if ((m->c->cleansession == 0 && m->c->cleanstart == 0) && m->c->session == NULL)
+							m->c->session = SSL_get1_session(m->c->net.ssl);
+					}
 				}
 			}
 			else
@@ -939,22 +1188,29 @@ static int MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOpt
 				goto exit;
 			}
 		}
-		else
-		{
 #endif
-			m->c->connect_state = 3; /* TCP connect completed, in which case send the MQTT connect packet */
-			if (MQTTPacket_send_connect(m->c, MQTTVersion) == SOCKET_ERROR)
+		else if (m->websocket)
+		{
+			m->c->connect_state = WEBSOCKET_IN_PROGRESS;
+			if ( WebSocket_connect(&m->c->net, m->serverURI) == SOCKET_ERROR )
 			{
 				rc = SOCKET_ERROR;
 				goto exit;
 			}
-#if defined(OPENSSL)
 		}
-#endif
+		else
+		{
+			m->c->connect_state = WAIT_FOR_CONNACK; /* TCP connect completed, in which case send the MQTT connect packet */
+			if (MQTTPacket_send_connect(m->c, MQTTVersion, connectProperties, willProperties) == SOCKET_ERROR)
+			{
+				rc = SOCKET_ERROR;
+				goto exit;
+			}
+		}
 	}
 
 #if defined(OPENSSL)
-	if (m->c->connect_state == 2) /* SSL connect sent - wait for completion */
+	if (m->c->connect_state == SSL_IN_PROGRESS) /* SSL connect sent - wait for completion */
 	{
 		Thread_unlock_mutex(mqttclient_mutex);
 		MQTTClient_waitfor(handle, CONNECT, &rc, millisecsTimeout - MQTTClient_elapsed(start));
@@ -964,21 +1220,48 @@ static int MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOpt
 			rc = SOCKET_ERROR;
 			goto exit;
 		}
-		if(!m->c->cleansession && m->c->session == NULL)
+		if((m->c->cleansession == 0 && m->c->cleanstart == 0) && m->c->session == NULL)
 			m->c->session = SSL_get1_session(m->c->net.ssl);
-		m->c->connect_state = 3; /* TCP connect completed, in which case send the MQTT connect packet */
-		if (MQTTPacket_send_connect(m->c, MQTTVersion) == SOCKET_ERROR)
+
+		if ( m->websocket )
+		{
+			/* wait for websocket connect */
+			m->c->connect_state = WEBSOCKET_IN_PROGRESS;
+			rc = WebSocket_connect( &m->c->net, m->serverURI );
+			if ( rc != 1 )
+			{
+				rc = SOCKET_ERROR;
+				goto exit;
+			}
+		}
+		else
+		{
+			m->c->connect_state = WAIT_FOR_CONNACK; /* TCP connect completed, in which case send the MQTT connect packet */
+			if (MQTTPacket_send_connect(m->c, MQTTVersion, connectProperties, willProperties) == SOCKET_ERROR)
+			{
+				rc = SOCKET_ERROR;
+				goto exit;
+			}
+		}
+	}
+#endif
+
+	if (m->c->connect_state == WEBSOCKET_IN_PROGRESS) /* websocket request sent - wait for upgrade */
+	{
+		Thread_unlock_mutex(mqttclient_mutex);
+		MQTTClient_waitfor(handle, CONNECT, &rc, millisecsTimeout - MQTTClient_elapsed(start));
+		Thread_lock_mutex(mqttclient_mutex);
+		m->c->connect_state = WAIT_FOR_CONNACK; /* websocket upgrade complete */
+		if (MQTTPacket_send_connect(m->c, MQTTVersion, connectProperties, willProperties) == SOCKET_ERROR)
 		{
 			rc = SOCKET_ERROR;
 			goto exit;
 		}
 	}
-#endif
 
-	if (m->c->connect_state == 3) /* MQTT connect sent - wait for CONNACK */
+	if (m->c->connect_state == WAIT_FOR_CONNACK) /* MQTT connect sent - wait for CONNACK */
 	{
 		MQTTPacket* pack = NULL;
-
 		Thread_unlock_mutex(mqttclient_mutex);
 		pack = MQTTClient_waitfor(handle, CONNACK, &rc, millisecsTimeout - MQTTClient_elapsed(start));
 		Thread_lock_mutex(mqttclient_mutex);
@@ -992,10 +1275,10 @@ static int MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOpt
 			{
 				m->c->connected = 1;
 				m->c->good = 1;
-				m->c->connect_state = 0;
+				m->c->connect_state = NOT_IN_PROGRESS;
 				if (MQTTVersion == 4)
 					sessionPresent = connack->flags.bits.sessionPresent;
-				if (m->c->cleansession)
+				if (m->c->cleansession || m->c->cleanstart)
 					rc = MQTTClient_cleanSession(m->c);
 				if (m->c->outboundMsgs->count > 0)
 				{
@@ -1010,15 +1293,20 @@ static int MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOpt
 					if (m->c->connected != 1)
 						rc = MQTTCLIENT_DISCONNECTED;
 				}
+				if (m->c->MQTTVersion == MQTTVERSION_5)
+				{
+					resp.properties = malloc(sizeof(MQTTProperties));
+					*resp.properties = MQTTProperties_copy(&connack->properties);
+				}
 			}
-			free(connack);
+			MQTTPacket_freeConnack(connack);
 			m->pack = NULL;
 		}
 	}
 exit:
 	if (rc == MQTTCLIENT_SUCCESS)
 	{
-		if (options->struct_version == 4) /* means we have to fill out return values */
+		if (options->struct_version >= 4) /* means we have to fill out return values */
 		{
 			options->returned.serverURI = serverURI;
 			options->returned.MQTTVersion = MQTTVersion;
@@ -1026,9 +1314,11 @@ exit:
 		}
 	}
 	else
-		MQTTClient_disconnect1(handle, 0, 0, (MQTTVersion == 3)); /* don't want to call connection lost */
-	FUNC_EXIT_RC(rc);
-  return rc;
+		MQTTClient_disconnect1(handle, 0, 0, (MQTTVersion == 3), MQTTREASONCODE_SUCCESS, NULL); /* don't want to call connection lost */
+
+	resp.reasonCode = rc;
+	FUNC_EXIT_RC(resp.reasonCode);
+	return resp;
 }
 
 static int retryLoopInterval = 5;
@@ -1046,22 +1336,35 @@ static void setRetryLoopInterval(int keepalive)
 }
 
 
-static int MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectOptions* options, const char* serverURI)
+static MQTTResponse MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectOptions* options, const char* serverURI,
+		MQTTProperties* connectProperties, MQTTProperties* willProperties)
 {
 	MQTTClients* m = handle;
 	START_TIME_TYPE start;
 	long millisecsTimeout = 30000L;
-	int rc = SOCKET_ERROR;
+	MQTTResponse rc = MQTTResponse_initializer;
 	int MQTTVersion = 0;
 
 	FUNC_ENTRY;
+	rc.reasonCode = SOCKET_ERROR;
 	millisecsTimeout = options->connectTimeout * 1000;
 	start = MQTTClient_start_clock();
 
 	m->c->keepAliveInterval = options->keepAliveInterval;
+	m->c->retryInterval = options->retryInterval;
 	setRetryLoopInterval(options->keepAliveInterval);
-	m->c->cleansession = options->cleansession;
+	m->c->MQTTVersion = options->MQTTVersion;
+	m->c->cleanstart = m->c->cleansession = 0;
+	if (m->c->MQTTVersion >= MQTTVERSION_5)
+		m->c->cleanstart = options->cleanstart;
+	else
+		m->c->cleansession = options->cleansession;
 	m->c->maxInflightMessages = (options->reliable) ? 1 : 10;
+	if (options->struct_version >= 6)
+	{
+		if (options->maxInflightMessages > 0)
+			m->c->maxInflightMessages = options->maxInflightMessages;
+	}
 
 	if (m->c->will)
 	{
@@ -1144,8 +1447,19 @@ static int MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectOptions* o
 		if (m->c->sslopts->struct_version >= 2)
 		{
 			m->c->sslopts->verify = options->ssl->verify;
-			if (m->c->sslopts->CApath)
+			if (options->ssl->CApath)
 				m->c->sslopts->CApath = MQTTStrdup(options->ssl->CApath);
+		}
+		if (m->c->sslopts->struct_version >= 3)
+		{
+			m->c->sslopts->ssl_error_cb = options->ssl->ssl_error_cb;
+			m->c->sslopts->ssl_error_context = options->ssl->ssl_error_context;
+		}
+		if (m->c->sslopts->struct_version >= 4)
+		{
+			m->c->sslopts->ssl_psk_cb = options->ssl->ssl_psk_cb;
+			m->c->sslopts->ssl_psk_context = options->ssl->ssl_psk_context;
+			m->c->sslopts->disableDefaultTrustStore = options->ssl->disableDefaultTrustStore;
 		}
 	}
 #endif
@@ -1175,42 +1489,81 @@ static int MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectOptions* o
 
 	if (MQTTVersion == MQTTVERSION_DEFAULT)
 	{
-		if ((rc = MQTTClient_connectURIVersion(handle, options, serverURI, 4, start, millisecsTimeout)) != MQTTCLIENT_SUCCESS)
-			rc = MQTTClient_connectURIVersion(handle, options, serverURI, 3, start, millisecsTimeout);
+		rc = MQTTClient_connectURIVersion(handle, options, serverURI, 4, start, millisecsTimeout,
+				connectProperties, willProperties);
+		if (rc.reasonCode != MQTTCLIENT_SUCCESS)
+		{
+			rc = MQTTClient_connectURIVersion(handle, options, serverURI, 3, start, millisecsTimeout,
+					connectProperties, willProperties);
+		}
 	}
 	else
-		rc = MQTTClient_connectURIVersion(handle, options, serverURI, MQTTVersion, start, millisecsTimeout);
+		rc = MQTTClient_connectURIVersion(handle, options, serverURI, MQTTVersion, start, millisecsTimeout,
+				connectProperties, willProperties);
 
-	FUNC_EXIT_RC(rc);
+	FUNC_EXIT_RC(rc.reasonCode);
 	return rc;
 }
 
+MQTTResponse MQTTClient_connectAll(MQTTClient handle, MQTTClient_connectOptions* options,
+		MQTTProperties* connectProperties, MQTTProperties* willProperties);
 
 int MQTTClient_connect(MQTTClient handle, MQTTClient_connectOptions* options)
 {
 	MQTTClients* m = handle;
-	int rc = SOCKET_ERROR;
+
+	if (m->c->MQTTVersion >= MQTTVERSION_5)
+		return MQTTCLIENT_WRONG_MQTT_VERSION;
+
+	MQTTResponse response = MQTTClient_connectAll(handle, options, NULL, NULL);
+
+	return response.reasonCode;
+}
+
+
+MQTTResponse MQTTClient_connect5(MQTTClient handle, MQTTClient_connectOptions* options,
+		MQTTProperties* connectProperties, MQTTProperties* willProperties)
+{
+	MQTTClients* m = handle;
+	MQTTResponse response = MQTTResponse_initializer;
+
+	if (m->c->MQTTVersion < MQTTVERSION_5)
+	{
+		response.reasonCode = MQTTCLIENT_WRONG_MQTT_VERSION;
+		return response;
+	}
+
+	return MQTTClient_connectAll(handle, options, connectProperties, willProperties);
+}
+
+
+MQTTResponse MQTTClient_connectAll(MQTTClient handle, MQTTClient_connectOptions* options,
+		MQTTProperties* connectProperties, MQTTProperties* willProperties)
+{
+	MQTTClients* m = handle;
+	MQTTResponse rc = MQTTResponse_initializer;
 
 	FUNC_ENTRY;
 	Thread_lock_mutex(connect_mutex);
 	Thread_lock_mutex(mqttclient_mutex);
 
+	rc.reasonCode = SOCKET_ERROR;
 	if (options == NULL)
 	{
-		rc = MQTTCLIENT_NULL_PARAMETER;
+		rc.reasonCode = MQTTCLIENT_NULL_PARAMETER;
 		goto exit;
 	}
 
-	if (strncmp(options->struct_id, "MQTC", 4) != 0 || 	options->struct_version < 0 || options->struct_version > 5)
+	if (strncmp(options->struct_id, "MQTC", 4) != 0 || options->struct_version < 0 || options->struct_version > 6)
 	{
-		rc = MQTTCLIENT_BAD_STRUCTURE;
+		rc.reasonCode = MQTTCLIENT_BAD_STRUCTURE;
 		goto exit;
 	}
 
 #if defined(OPENSSL)
 	if (m->ssl && options->ssl == NULL)
 	{
-		rc = MQTTCLIENT_NULL_PARAMETER;
+		rc.reasonCode = MQTTCLIENT_NULL_PARAMETER;
 		goto exit;
 	}
 #endif
@@ -1219,7 +1572,7 @@ int MQTTClient_connect(MQTTClient handle, MQTTClient_connectOptions* options)
 	{
 		if (strncmp(options->will->struct_id, "MQTW", 4) != 0 || (options->will->struct_version != 0 && options->will->struct_version != 1))
 		{
-			rc = MQTTCLIENT_BAD_STRUCTURE;
+			rc.reasonCode = MQTTCLIENT_BAD_STRUCTURE;
 			goto exit;
 		}
 	}
@@ -1228,9 +1581,9 @@ int MQTTClient_connect(MQTTClient handle, MQTTClient_connectOptions* options)
 #if defined(OPENSSL)
 	if (options->struct_version != 0 && options->ssl) /* check validity of SSL options structure */
 	{
-		if (strncmp(options->ssl->struct_id, "MQTS", 4) != 0 || options->ssl->struct_version < 0 || options->ssl->struct_version > 2)
+		if (strncmp(options->ssl->struct_id, "MQTS", 4) != 0 || options->ssl->struct_version < 0 || options->ssl->struct_version > 4)
 		{
-			rc = MQTTCLIENT_BAD_STRUCTURE;
+			rc.reasonCode = MQTTCLIENT_BAD_STRUCTURE;
 			goto exit;
 		}
 	}
@@ -1239,12 +1592,40 @@ int MQTTClient_connect(MQTTClient handle, MQTTClient_connectOptions* options)
 	if ((options->username && !UTF8_validateString(options->username)) ||
 		(options->password && !UTF8_validateString(options->password)))
 	{
-		rc = MQTTCLIENT_BAD_UTF8_STRING;
+		rc.reasonCode = MQTTCLIENT_BAD_UTF8_STRING;
+		goto exit;
+	}
+
+	if (options->MQTTVersion != MQTTVERSION_DEFAULT &&
+			(options->MQTTVersion < MQTTVERSION_3_1 || options->MQTTVersion > MQTTVERSION_5))
+	{
+		rc.reasonCode = MQTTCLIENT_BAD_MQTT_VERSION;
+		goto exit;
+	}
+
+	if (options->MQTTVersion >= MQTTVERSION_5)
+	{
+		if (options->cleansession != 0)
+		{
+			rc.reasonCode = MQTTCLIENT_BAD_MQTT_OPTION;
+			goto exit;
+		}
+	}
+	else if (options->cleanstart != 0)
+	{
+		rc.reasonCode = MQTTCLIENT_BAD_MQTT_OPTION;
 		goto exit;
 	}
 
 	if (options->struct_version < 2 || options->serverURIcount == 0)
-		rc = MQTTClient_connectURI(handle, options, m->serverURI);
+	{
+		if ( !m )
+		{
+			rc.reasonCode = MQTTCLIENT_NULL_PARAMETER;
+			goto exit;
+		}
+		rc = MQTTClient_connectURI(handle, options, m->serverURI, connectProperties, willProperties);
+	}
 	else
 	{
 		int i;
@@ -1255,20 +1636,41 @@ int MQTTClient_connect(MQTTClient handle, MQTTClient_connectOptions* options)
 
 			if (strncmp(URI_TCP, serverURI, strlen(URI_TCP)) == 0)
 				serverURI += strlen(URI_TCP);
+			else if (strncmp(URI_WS, serverURI, strlen(URI_WS)) == 0)
+			{
+				serverURI += strlen(URI_WS);
+				m->websocket = 1;
+			}
 #if defined(OPENSSL)
 			else if (strncmp(URI_SSL, serverURI, strlen(URI_SSL)) == 0)
 			{
 				serverURI += strlen(URI_SSL);
 				m->ssl = 1;
 			}
+			else if (strncmp(URI_WSS, serverURI, strlen(URI_WSS)) == 0)
+			{
+				serverURI += strlen(URI_WSS);
+				m->ssl = 1;
+				m->websocket = 1;
+			}
 #endif
-			if ((rc = MQTTClient_connectURI(handle, options, serverURI)) == MQTTCLIENT_SUCCESS)
+			rc = MQTTClient_connectURI(handle, options, serverURI, connectProperties, willProperties);
+			if (rc.reasonCode == MQTTREASONCODE_SUCCESS)
 				break;
+		}
+	}
+	if (rc.reasonCode == MQTTREASONCODE_SUCCESS)
+	{
+		if (rc.properties && MQTTProperties_hasProperty(rc.properties, MQTTPROPERTY_CODE_RECEIVE_MAXIMUM))
+		{
+			int recv_max = MQTTProperties_getNumericValue(rc.properties, MQTTPROPERTY_CODE_RECEIVE_MAXIMUM);
+			if (m->c->maxInflightMessages > recv_max)
+				m->c->maxInflightMessages = recv_max;
 		}
 	}
 
 exit:
-	if (m->c->will)
+	if (m && m->c && m->c->will)
 	{
 		if (m->c->will->payload)
 			free(m->c->will->payload);
@@ -1279,7 +1681,7 @@ exit:
 	}
 	Thread_unlock_mutex(mqttclient_mutex);
 	Thread_unlock_mutex(connect_mutex);
-	FUNC_EXIT_RC(rc);
+	FUNC_EXIT_RC(rc.reasonCode);
 	return rc;
 }
 
@@ -1287,7 +1689,8 @@ exit:
 /**
  * mqttclient_mutex must be locked when you call this function, if multi threaded
  */
-static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int call_connection_lost, int stop)
+static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int call_connection_lost, int stop,
+		enum MQTTReasonCodes reason, MQTTProperties* props)
 {
 	MQTTClients* m = handle;
 	START_TIME_TYPE start;
@@ -1300,7 +1703,7 @@ static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int call_conne
 		rc = MQTTCLIENT_FAILURE;
 		goto exit;
 	}
-	if (m->c->connected == 0 && m->c->connect_state == 0)
+	if (m->c->connected == 0 && m->c->connect_state == NOT_IN_PROGRESS)
 	{
 		rc = MQTTCLIENT_DISCONNECTED;
 		goto exit;
@@ -1309,7 +1712,7 @@ static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int call_conne
 	if (m->c->connected != 0)
 	{
 		start = MQTTClient_start_clock();
-		m->c->connect_state = -2; /* indicate disconnecting */
+		m->c->connect_state = DISCONNECTING; /* indicate disconnecting */
 		while (m->c->inboundMsgs->count > 0 || m->c->outboundMsgs->count > 0)
 		{ /* wait for all inflight message flows to finish, up to timeout */
 			if (MQTTClient_elapsed(start) >= timeout)
@@ -1320,16 +1723,8 @@ static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int call_conne
 		}
 	}
 
-	MQTTClient_closeSession(m->c);
+	MQTTClient_closeSession(m->c, reason, props);
 
-	while (Thread_check_sem(m->connect_sem))
-		Thread_wait_sem(m->connect_sem, 100);
-	while (Thread_check_sem(m->connack_sem))
-		Thread_wait_sem(m->connack_sem, 100);
-	while (Thread_check_sem(m->suback_sem))
-		Thread_wait_sem(m->suback_sem, 100);
-	while (Thread_check_sem(m->unsuback_sem))
-		Thread_wait_sem(m->unsuback_sem, 100);
 exit:
 	if (stop)
 		MQTTClient_stop();
@@ -1348,7 +1743,7 @@ exit:
  */
 static int MQTTClient_disconnect_internal(MQTTClient handle, int timeout)
 {
-	return MQTTClient_disconnect1(handle, timeout, 1, 1);
+	return MQTTClient_disconnect1(handle, timeout, 1, 1, MQTTREASONCODE_SUCCESS, NULL);
 }
 
 
@@ -1366,7 +1761,18 @@ int MQTTClient_disconnect(MQTTClient handle, int timeout)
 	int rc = 0;
 
 	Thread_lock_mutex(mqttclient_mutex);
-	rc = MQTTClient_disconnect1(handle, timeout, 0, 1);
+	rc = MQTTClient_disconnect1(handle, timeout, 0, 1, MQTTREASONCODE_SUCCESS, NULL);
+	Thread_unlock_mutex(mqttclient_mutex);
+	return rc;
+}
+
+
+int MQTTClient_disconnect5(MQTTClient handle, int timeout, enum MQTTReasonCodes reason, MQTTProperties* props)
+{
+	int rc = 0;
+
+	Thread_lock_mutex(mqttclient_mutex);
+	rc = MQTTClient_disconnect1(handle, timeout, 0, 1, reason, props);
 	Thread_unlock_mutex(mqttclient_mutex);
 	return rc;
 }
@@ -1387,19 +1793,22 @@ int MQTTClient_isConnected(MQTTClient handle)
 }
 
 
-int MQTTClient_subscribeMany(MQTTClient handle, int count, char* const* topic, int* qos)
+MQTTResponse MQTTClient_subscribeMany5(MQTTClient handle, int count, char* const* topic,
+		int* qos, MQTTSubscribe_options* opts, MQTTProperties* props)
 {
 	MQTTClients* m = handle;
 	List* topics = NULL;
 	List* qoss = NULL;
 	int i = 0;
 	int rc = MQTTCLIENT_FAILURE;
+	MQTTResponse resp = MQTTResponse_initializer;
 	int msgid = 0;
 
 	FUNC_ENTRY;
 	Thread_lock_mutex(subscribe_mutex);
 	Thread_lock_mutex(mqttclient_mutex);
 
+	resp.reasonCode = MQTTCLIENT_FAILURE;
 	if (m == NULL || m->c == NULL)
 	{
 		rc = MQTTCLIENT_FAILURE;
@@ -1418,7 +1827,7 @@ int MQTTClient_subscribeMany(MQTTClient handle, int count, char* const* topic, i
 			goto exit;
 		}
 
-		if(qos[i] < 0 || qos[i] > 2)
+		if (qos[i] < 0 || qos[i] > 2)
 		{
 			rc = MQTTCLIENT_BAD_QOS;
 			goto exit;
@@ -1438,7 +1847,7 @@ int MQTTClient_subscribeMany(MQTTClient handle, int count, char* const* topic, i
 		ListAppend(qoss, &qos[i], sizeof(int));
 	}
 
-	rc = MQTTProtocol_subscribe(m->c, topics, qoss, msgid);
+	rc = MQTTProtocol_subscribe(m->c, topics, qoss, msgid, opts, props);
 	ListFreeNoContent(topics);
 	ListFreeNoContent(qoss);
 
@@ -1452,12 +1861,36 @@ int MQTTClient_subscribeMany(MQTTClient handle, int count, char* const* topic, i
 		if (pack != NULL)
 		{
 			Suback* sub = (Suback*)pack;
-			ListElement* current = NULL;
-			i = 0;
-			while (ListNextElement(sub->qoss, &current))
+
+			if (m->c->MQTTVersion == MQTTVERSION_5)
 			{
-				int* reqqos = (int*)(current->content);
-				qos[i++] = *reqqos;
+				if (sub->properties.count > 0)
+				{
+					resp.properties = malloc(sizeof(MQTTProperties));
+					*resp.properties = MQTTProperties_copy(&sub->properties);
+				}
+				resp.reasonCodeCount = sub->qoss->count;
+				resp.reasonCode = *(int*)sub->qoss->first->content;
+				if (sub->qoss->count > 1)
+				{
+					ListElement* current = NULL;
+					int rc_count = 0;
+
+					resp.reasonCodes = malloc(sizeof(enum MQTTReasonCodes) * (sub->qoss->count));
+					while (ListNextElement(sub->qoss, &current))
+						(resp.reasonCodes)[rc_count++] = *(enum MQTTReasonCodes*)(current->content);
+				}
+			}
+			else
+			{
+				ListElement* current = NULL;
+				i = 0;
+				while (ListNextElement(sub->qoss, &current))
+				{
+					int* reqqos = (int*)(current->content);
+					qos[i++] = *reqqos;
+				}
+				resp.reasonCode = rc;
 			}
 			rc = MQTTProtocol_handleSubacks(pack, m->c->net.socket);
 			m->pack = NULL;
@@ -1472,39 +1905,74 @@ int MQTTClient_subscribeMany(MQTTClient handle, int count, char* const* topic, i
 		rc = MQTTCLIENT_SUCCESS;
 
 exit:
+	if (rc < 0)
+		resp.reasonCode = rc;
 	Thread_unlock_mutex(mqttclient_mutex);
 	Thread_unlock_mutex(subscribe_mutex);
-	FUNC_EXIT_RC(rc);
+	FUNC_EXIT_RC(resp.reasonCode);
+	return resp;
+}
+
+
+
+int MQTTClient_subscribeMany(MQTTClient handle, int count, char* const* topic, int* qos)
+{
+	MQTTClients* m = handle;
+	MQTTResponse response = MQTTResponse_initializer;
+
+	if (m->c->MQTTVersion >= MQTTVERSION_5)
+		response.reasonCode = MQTTCLIENT_BAD_MQTT_VERSION;
+	else
+		response = MQTTClient_subscribeMany5(handle, count, topic, qos, NULL, NULL);
+
+	return response.reasonCode;
+}
+
+
+
+MQTTResponse MQTTClient_subscribe5(MQTTClient handle, const char* topic, int qos,
+		MQTTSubscribe_options* opts, MQTTProperties* props)
+{
+	MQTTResponse rc;
+	char *const topics[] = {(char*)topic};
+
+	FUNC_ENTRY;
+	rc = MQTTClient_subscribeMany5(handle, 1, topics, &qos, opts, props);
+	if (qos == MQTT_BAD_SUBSCRIBE) /* addition for MQTT 3.1.1 - error code from subscribe */
+		rc.reasonCode = MQTT_BAD_SUBSCRIBE;
+	FUNC_EXIT_RC(rc.reasonCode);
 	return rc;
 }
 
 
 int MQTTClient_subscribe(MQTTClient handle, const char* topic, int qos)
 {
-	int rc = 0;
-	char *const topics[] = {(char*)topic};
+	MQTTClients* m = handle;
+	MQTTResponse response = MQTTResponse_initializer;
 
-	FUNC_ENTRY;
-	rc = MQTTClient_subscribeMany(handle, 1, topics, &qos);
-	if (qos == MQTT_BAD_SUBSCRIBE) /* addition for MQTT 3.1.1 - error code from subscribe */
-		rc = MQTT_BAD_SUBSCRIBE;
-	FUNC_EXIT_RC(rc);
-	return rc;
+	if (m->c->MQTTVersion >= MQTTVERSION_5)
+		response.reasonCode = MQTTCLIENT_BAD_MQTT_VERSION;
+	else
+		response = MQTTClient_subscribe5(handle, topic, qos, NULL, NULL);
+
+	return response.reasonCode;
 }
 
 
-int MQTTClient_unsubscribeMany(MQTTClient handle, int count, char* const* topic)
+MQTTResponse MQTTClient_unsubscribeMany5(MQTTClient handle, int count, char* const* topic, MQTTProperties* props)
 {
 	MQTTClients* m = handle;
 	List* topics = NULL;
 	int i = 0;
 	int rc = SOCKET_ERROR;
+	MQTTResponse resp = MQTTResponse_initializer;
 	int msgid = 0;
 
 	FUNC_ENTRY;
 	Thread_lock_mutex(unsubscribe_mutex);
 	Thread_lock_mutex(mqttclient_mutex);
 
+	resp.reasonCode = MQTTCLIENT_FAILURE;
 	if (m == NULL || m->c == NULL)
 	{
 		rc = MQTTCLIENT_FAILURE;
@@ -1532,7 +2000,7 @@ int MQTTClient_unsubscribeMany(MQTTClient handle, int count, char* const* topic)
 	topics = ListInitialize();
 	for (i = 0; i < count; i++)
 		ListAppend(topics, topic[i], strlen(topic[i]));
-	rc = MQTTProtocol_unsubscribe(m->c, topics, msgid);
+	rc = MQTTProtocol_unsubscribe(m->c, topics, msgid, props);
 	ListFreeNoContent(topics);
 
 	if (rc == TCPSOCKET_COMPLETE)
@@ -1544,6 +2012,29 @@ int MQTTClient_unsubscribeMany(MQTTClient handle, int count, char* const* topic)
 		Thread_lock_mutex(mqttclient_mutex);
 		if (pack != NULL)
 		{
+			Unsuback* unsub = (Unsuback*)pack;
+
+			if (m->c->MQTTVersion == MQTTVERSION_5)
+			{
+				if (unsub->properties.count > 0)
+				{
+					resp.properties = malloc(sizeof(MQTTProperties));
+					*resp.properties = MQTTProperties_copy(&unsub->properties);
+				}
+				resp.reasonCodeCount = unsub->reasonCodes->count;
+				resp.reasonCode = *(int*)unsub->reasonCodes->first->content;
+				if (unsub->reasonCodes->count > 1)
+				{
+					ListElement* current = NULL;
+					int rc_count = 0;
+
+					resp.reasonCodes = malloc(sizeof(enum MQTTReasonCodes) * (unsub->reasonCodes->count));
+					while (ListNextElement(unsub->reasonCodes, &current))
+						(resp.reasonCodes)[rc_count++] = *(enum MQTTReasonCodes*)(current->content);
+				}
+			}
+			else
+				resp.reasonCode = rc;
 			rc = MQTTProtocol_handleUnsubacks(pack, m->c->net.socket);
 			m->pack = NULL;
 		}
@@ -1555,26 +2046,43 @@ int MQTTClient_unsubscribeMany(MQTTClient handle, int count, char* const* topic)
 		MQTTClient_disconnect_internal(handle, 0);
 
 exit:
+	if (rc < 0)
+		resp.reasonCode = rc;
 	Thread_unlock_mutex(mqttclient_mutex);
 	Thread_unlock_mutex(unsubscribe_mutex);
-	FUNC_EXIT_RC(rc);
+	FUNC_EXIT_RC(resp.reasonCode);
+	return resp;
+}
+
+
+int MQTTClient_unsubscribeMany(MQTTClient handle, int count, char* const* topic)
+{
+	MQTTResponse response = MQTTClient_unsubscribeMany5(handle, count, topic, NULL);
+
+	return response.reasonCode;
+}
+
+
+MQTTResponse MQTTClient_unsubscribe5(MQTTClient handle, const char* topic, MQTTProperties* props)
+{
+	MQTTResponse rc;
+	char *const topics[] = {(char*)topic};
+
+	rc = MQTTClient_unsubscribeMany5(handle, 1, topics, props);
 	return rc;
 }
 
 
 int MQTTClient_unsubscribe(MQTTClient handle, const char* topic)
 {
-	int rc = 0;
-	char *const topics[] = {(char*)topic};
-	FUNC_ENTRY;
-	rc = MQTTClient_unsubscribeMany(handle, 1, topics);
-	FUNC_EXIT_RC(rc);
-	return rc;
+	MQTTResponse response = MQTTClient_unsubscribe5(handle, topic, NULL);
+
+	return response.reasonCode;
 }
 
 
-int MQTTClient_publish(MQTTClient handle, const char* topicName, int payloadlen, void* payload,
-							 int qos, int retained, MQTTClient_deliveryToken* deliveryToken)
+MQTTResponse MQTTClient_publish5(MQTTClient handle, const char* topicName, int payloadlen, const void* payload,
+		int qos, int retained, MQTTProperties* properties, MQTTClient_deliveryToken* deliveryToken)
 {
 	int rc = MQTTCLIENT_SUCCESS;
 	MQTTClients* m = handle;
@@ -1582,6 +2090,7 @@ int MQTTClient_publish(MQTTClient handle, const char* topicName, int payloadlen,
 	Publish* p = NULL;
 	int blocked = 0;
 	int msgid = 0;
+	MQTTResponse resp = MQTTResponse_initializer;
 
 	FUNC_ENTRY;
 	Thread_lock_mutex(mqttclient_mutex);
@@ -1592,6 +2101,7 @@ int MQTTClient_publish(MQTTClient handle, const char* topicName, int payloadlen,
 		rc = MQTTCLIENT_DISCONNECTED;
 	else if (!UTF8_validateString(topicName))
 		rc = MQTTCLIENT_BAD_UTF8_STRING;
+
 	if (rc != MQTTCLIENT_SUCCESS)
 		goto exit;
 
@@ -1621,12 +2131,28 @@ int MQTTClient_publish(MQTTClient handle, const char* topicName, int payloadlen,
 		goto exit;
 	}
 
-	p = malloc(sizeof(Publish));
-
-	p->payload = payload;
+	p = malloc(sizeof(Publish) + payloadlen);
+	p->payload = (void*)payload;
 	p->payloadlen = payloadlen;
-	p->topic = (char*)topicName;
+	if (payloadlen > 0)
+	{
+		p->payload = (char*)p + sizeof(Publish);
+		memcpy(p->payload, payload, payloadlen);
+		p->payloadlen = payloadlen;
+	}
+	p->topic = MQTTStrdup(topicName);
 	p->msgId = msgid;
+	p->MQTTVersion = m->c->MQTTVersion;
+	if (m->c->MQTTVersion >= MQTTVERSION_5)
+	{
+		if (properties)
+			p->properties = *properties;
+		else
+		{
+			MQTTProperties props = MQTTProperties_initializer;
+			p->properties = props;
+		}
+	}
 
 	rc = MQTTProtocol_startPublish(m->c, p, qos, retained, &msg);
 
@@ -1649,6 +2175,7 @@ int MQTTClient_publish(MQTTClient handle, const char* topicName, int payloadlen,
 	if (deliveryToken && qos > 0)
 		*deliveryToken = msg->msgid;
 
+	if (p->topic) free(p->topic);
 	free(p);
 
 	if (rc == SOCKET_ERROR)
@@ -1660,35 +2187,71 @@ int MQTTClient_publish(MQTTClient handle, const char* topicName, int payloadlen,
 
 exit:
 	Thread_unlock_mutex(mqttclient_mutex);
-	FUNC_EXIT_RC(rc);
-	return rc;
+	resp.reasonCode = rc;
+	FUNC_EXIT_RC(resp.reasonCode);
+	return resp;
 }
 
+
+int MQTTClient_publish(MQTTClient handle, const char* topicName, int payloadlen, const void* payload,
+							 int qos, int retained, MQTTClient_deliveryToken* deliveryToken)
+{
+	MQTTClients* m = handle;
+	MQTTResponse rc = MQTTResponse_initializer;
+
+	if (m->c->MQTTVersion >= MQTTVERSION_5)
+		rc.reasonCode = MQTTCLIENT_BAD_MQTT_VERSION;
+	else
+		rc = MQTTClient_publish5(handle, topicName, payloadlen, payload, qos, retained, NULL, deliveryToken);
+	return rc.reasonCode;
+}
+
+
+MQTTResponse MQTTClient_publishMessage5(MQTTClient handle, const char* topicName, MQTTClient_message* message,
+								MQTTClient_deliveryToken* deliveryToken)
+{
+	MQTTResponse rc = MQTTResponse_initializer;
+	MQTTProperties* props = NULL;
+
+	FUNC_ENTRY;
+	if (message == NULL)
+	{
+		rc.reasonCode = MQTTCLIENT_NULL_PARAMETER;
+		goto exit;
+	}
+
+	if (strncmp(message->struct_id, "MQTM", 4) != 0 ||
+			(message->struct_version != 0 && message->struct_version != 1))
+	{
+		rc.reasonCode = MQTTCLIENT_BAD_STRUCTURE;
+		goto exit;
+	}
+
+	if (message->struct_version >= 1)
+		props = &message->properties;
+
+	rc = MQTTClient_publish5(handle, topicName, message->payloadlen, message->payload,
+								message->qos, message->retained, props, deliveryToken);
+exit:
+	FUNC_EXIT_RC(rc.reasonCode);
+	return rc;
+}
 
 
 int MQTTClient_publishMessage(MQTTClient handle, const char* topicName, MQTTClient_message* message,
 															 MQTTClient_deliveryToken* deliveryToken)
 {
-	int rc = MQTTCLIENT_SUCCESS;
+	MQTTClients* m = handle;
+	MQTTResponse rc = MQTTResponse_initializer;
 
-	FUNC_ENTRY;
-	if (message == NULL)
-	{
-		rc = MQTTCLIENT_NULL_PARAMETER;
-		goto exit;
-	}
-
-	if (strncmp(message->struct_id, "MQTM", 4) != 0 || message->struct_version != 0)
-	{
-		rc = MQTTCLIENT_BAD_STRUCTURE;
-		goto exit;
-	}
-
-	rc = MQTTClient_publish(handle, topicName, message->payloadlen, message->payload,
-								message->qos, message->retained, deliveryToken);
-exit:
-	FUNC_EXIT_RC(rc);
-	return rc;
+	if (strncmp(message->struct_id, "MQTM", 4) != 0 ||
+			(message->struct_version != 0 && message->struct_version != 1))
+		rc.reasonCode = MQTTCLIENT_BAD_STRUCTURE;
+	else if (m->c->MQTTVersion >= MQTTVERSION_5)
+		rc.reasonCode = MQTTCLIENT_BAD_MQTT_VERSION;
+	else
+		rc = MQTTClient_publishMessage5(handle, topicName, message, deliveryToken);
+	return rc.reasonCode;
 }
 
 
@@ -1741,15 +2304,18 @@ static MQTTPacket* MQTTClient_cycle(int* sock, unsigned long timeout, int* rc)
 			m = (MQTTClient)(handles->current->content);
 		if (m != NULL)
 		{
-			if (m->c->connect_state == 1 || m->c->connect_state == 2)
+			if (m->c->connect_state == TCP_IN_PROGRESS || m->c->connect_state == SSL_IN_PROGRESS)
 				*rc = 0;  /* waiting for connect state to clear */
+			else if (m->c->connect_state == WEBSOCKET_IN_PROGRESS)
+				*rc = WebSocket_upgrade(&m->c->net);
 			else
 			{
-				pack = MQTTPacket_Factory(&m->c->net, rc);
+				pack = MQTTPacket_Factory(m->c->MQTTVersion, &m->c->net, rc);
 				if (*rc == TCPSOCKET_INTERRUPTED)
 					*rc = 0;
 			}
 		}
+
 		if (pack)
 		{
 			int freed = 1;
@@ -1763,8 +2329,13 @@ static MQTTPacket* MQTTClient_cycle(int* sock, unsigned long timeout, int* rc)
 
 				ack = (pack->header.bits.type == PUBCOMP) ? *(Pubcomp*)pack : *(Puback*)pack;
 				msgid = ack.msgId;
+				if (m && m->c->MQTTVersion >= MQTTVERSION_5 && m->published)
+				{
+					Log(TRACE_MIN, -1, "Calling published for client %s, msgid %d", m->c->clientID, msgid);
+					(*(m->published))(m->published_context, msgid, pack->header.bits.type, &ack.properties, ack.rc);
+				}
 				*rc = (pack->header.bits.type == PUBCOMP) ?
-						MQTTProtocol_handlePubcomps(pack, *sock) : MQTTProtocol_handlePubacks(pack, *sock);
+					MQTTProtocol_handlePubcomps(pack, *sock) : MQTTProtocol_handlePubacks(pack, *sock);
 				if (m && m->dc)
 				{
 					Log(TRACE_MIN, -1, "Calling deliveryComplete for client %s, msgid %d", m->c->clientID, msgid);
@@ -1772,7 +2343,17 @@ static MQTTPacket* MQTTClient_cycle(int* sock, unsigned long timeout, int* rc)
 				}
 			}
 			else if (pack->header.bits.type == PUBREC)
+			{
+				Pubrec* pubrec = (Pubrec*)pack;
+
+				if (m && m->c->MQTTVersion >= MQTTVERSION_5 && m->published && pubrec->rc >= MQTTREASONCODE_UNSPECIFIED_ERROR)
+				{
+					Log(TRACE_MIN, -1, "Calling published for client %s, msgid %d", m->c->clientID, ack.msgId);
+					(*(m->published))(m->published_context, pubrec->msgId, pack->header.bits.type,
+							&pubrec->properties, pubrec->rc);
+				}
 				*rc = MQTTProtocol_handlePubrecs(pack, *sock);
+			}
 			else if (pack->header.bits.type == PUBREL)
 				*rc = MQTTProtocol_handlePubrels(pack, *sock);
 			else if (pack->header.bits.type == PINGRESP)
@@ -1833,7 +2414,7 @@ static MQTTPacket* MQTTClient_waitfor(MQTTClient handle, int packet_type, int* r
 					break;
 				if (pack && (pack->header.bits.type == packet_type))
 					break;
-				if (m->c->connect_state == 1)
+				if (m->c->connect_state == TCP_IN_PROGRESS)
 				{
 					int error;
 					socklen_t len = sizeof(error);
@@ -1843,25 +2424,32 @@ static MQTTPacket* MQTTClient_waitfor(MQTTClient handle, int packet_type, int* r
 					break;
 				}
 #if defined(OPENSSL)
-				else if (m->c->connect_state == 2)
+				else if (m->c->connect_state == SSL_IN_PROGRESS)
 				{
-					*rc = SSLSocket_connect(m->c->net.ssl, sock,
-							m->serverURI, m->c->sslopts->verify);
+					*rc = m->c->sslopts->struct_version >= 3 ?
+						SSLSocket_connect(m->c->net.ssl, sock, m->serverURI,
+							m->c->sslopts->verify, m->c->sslopts->ssl_error_cb, m->c->sslopts->ssl_error_context) :
+						SSLSocket_connect(m->c->net.ssl, sock, m->serverURI,
+							m->c->sslopts->verify, NULL, NULL);
 					if (*rc == SSL_FATAL)
 						break;
 					else if (*rc == 1) /* rc == 1 means SSL connect has finished and succeeded */
 					{
-						if (!m->c->cleansession && m->c->session == NULL)
+						if ((m->c->cleansession == 0 && m->c->cleanstart == 0) && m->c->session == NULL)
 							m->c->session = SSL_get1_session(m->c->net.ssl);
 						break;
 					}
 				}
 #endif
-				else if (m->c->connect_state == 3)
+				else if (m->c->connect_state == WEBSOCKET_IN_PROGRESS )
+				{
+					*rc = 1;
+					break;
+				}
+				else if (m->c->connect_state == WAIT_FOR_CONNACK)
 				{
 					int error;
 					socklen_t len = sizeof(error);
-
 					if (getsockopt(m->c->net.socket, SOL_SOCKET, SO_ERROR, (char*)&error, &len) == 0)
 					{
 						if (error)
@@ -1965,7 +2553,7 @@ void MQTTClient_yield(void)
 		if (rc == SOCKET_ERROR && ListFindItem(handles, &sock, clientSockCompare))
 		{
 			MQTTClients* m = (MQTTClient)(handles->current->content);
-			if (m->c->connect_state != -2)
+			if (m->c->connect_state != DISCONNECTING)
 				MQTTClient_disconnect_internal(m, 0);
 		}
 		Thread_unlock_mutex(mqttclient_mutex);
@@ -2062,6 +2650,19 @@ exit:
 	return rc;
 }
 
+
+void MQTTClient_setTraceLevel(enum MQTTCLIENT_TRACE_LEVELS level)
+{
+	Log_setTraceLevel((enum LOG_LEVELS)level);
+}
+
+
+void MQTTClient_setTraceCallback(MQTTClient_traceCallback* callback)
+{
+	Log_setTraceCallback((Log_traceCallback*)callback);
+}
+
+
 MQTTClient_nameValue* MQTTClient_getVersionInfo(void)
 {
 	#define MAX_INFO_STRINGS 8
@@ -2069,7 +2670,7 @@ MQTTClient_nameValue* MQTTClient_getVersionInfo(void)
 	int i = 0;
 
 	libinfo[i].name = "Product name";
-	libinfo[i++].value = "Paho Synchronous MQTT C Client Library";
+	libinfo[i++].value = "Eclipse Paho Synchronous MQTT C Client Library";
 
 	libinfo[i].name = "Version";
 	libinfo[i++].value = CLIENT_VERSION;
@@ -2095,6 +2696,44 @@ MQTTClient_nameValue* MQTTClient_getVersionInfo(void)
 	libinfo[i].name = NULL;
 	libinfo[i].value = NULL;
 	return libinfo;
+}
+
+
+const char* MQTTClient_strerror(int code)
+{
+  static char buf[30];
+
+  switch (code) {
+    case MQTTCLIENT_SUCCESS:
+      return "Success";
+    case MQTTCLIENT_FAILURE:
+      return "Failure";
+    case MQTTCLIENT_DISCONNECTED:
+      return "Disconnected";
+    case MQTTCLIENT_MAX_MESSAGES_INFLIGHT:
+      return "Maximum in-flight messages amount reached";
+    case MQTTCLIENT_BAD_UTF8_STRING:
+      return "Invalid UTF8 string";
+    case MQTTCLIENT_NULL_PARAMETER:
+      return "Invalid (NULL) parameter";
+    case MQTTCLIENT_TOPICNAME_TRUNCATED:
+      return "Topic containing NULL characters has been truncated";
+    case MQTTCLIENT_BAD_STRUCTURE:
+      return "Bad structure";
+    case MQTTCLIENT_BAD_QOS:
+      return "Invalid QoS value";
+    case MQTTCLIENT_SSL_NOT_SUPPORTED:
+      return "SSL is not supported";
+    case MQTTCLIENT_BAD_PROTOCOL:
+      return "Invalid protocol scheme";
+    case MQTTCLIENT_BAD_MQTT_OPTION:
+      return "Options for wrong MQTT version";
+    case MQTTCLIENT_WRONG_MQTT_VERSION:
+    	  return "Client created for another version of MQTT";
+  }
+
+  sprintf(buf, "Unknown error code %d", code);
+  return buf;
 }
 
 

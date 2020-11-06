@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2014 IBM Corp.
+ * Copyright (c) 2009, 2018 IBM Corp.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
@@ -162,7 +162,7 @@ int Log_initialize(Log_nameValue* info)
 			trace_settings.trace_level = TRACE_MAXIMUM;
 		else if (strcmp(envval, "MEDIUM") == 0 || strcmp(envval, "TRACE_MEDIUM") == 0)
 			trace_settings.trace_level = TRACE_MEDIUM;
-		else if (strcmp(envval, "MINIMUM") == 0 || strcmp(envval, "TRACE_MEDIUM") == 0)
+		else if (strcmp(envval, "MINIMUM") == 0 || strcmp(envval, "TRACE_MINIMUM") == 0)
 			trace_settings.trace_level = TRACE_MINIMUM;
 		else if (strcmp(envval, "PROTOCOL") == 0  || strcmp(envval, "TRACE_PROTOCOL") == 0)
 			trace_output_level = TRACE_PROTOCOL;
@@ -406,7 +406,6 @@ void Log(enum LOG_LEVELS log_level, int msgno, const char *format, ...)
 	if (log_level >= trace_settings.trace_level)
 	{
 		const char *temp = NULL;
-		static char msg_buf[512];
 		va_list args;
 
 		/* we're using a static character buffer, so we need to make sure only one thread uses it at a time */
@@ -421,13 +420,6 @@ void Log(enum LOG_LEVELS log_level, int msgno, const char *format, ...)
 		va_end(args);
 		Thread_unlock_mutex(log_mutex); 
 	}
-
-	/*if (log_level >= LOG_ERROR)
-	{
-		char* filename = NULL;
-		Log_recordFFDC(&msg_buf[7]);
-	}
-	*/
 }
 
 

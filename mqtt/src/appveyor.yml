@@ -1,16 +1,20 @@
-version: 1.2.{build}
-image:
-  - Visual Studio 2013
-  - Visual Studio 2015
+version: 1.3.{build}
+ 
+environment:
+  matrix:
+    - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2013
+      PAHO_WINDOWS_BUILD_BIT: x86
+    - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2015
+      PAHO_WINDOWS_BUILD_BIT: x64
+    
 configuration: Debug
 install:
   - cmd: openssl version
-  - cmd: python --version
-  - cmd: netsh advfirewall firewall add rule name="Python 2.7" dir=in action=allow program="C:\Python27\python.exe" enable=yes
+  - cmd: C:\Python36\python --version
+  - cmd: netsh advfirewall firewall add rule name="Python 3.6" dir=in action=allow program="C:\Python36\python.exe" enable=yes
   - cmd: netsh advfirewall firewall add rule name="Open Port 1883" dir=in action=allow protocol=TCP localport=1883
   - cmd: netsh advfirewall set allprofiles state off
-  - ps: Start-Process python -ArgumentList 'test\mqttsas2.py'
-  - cmd: C:\Python36\python --version
+  - ps: Start-Process C:\Python36\python -ArgumentList 'test\mqttsas.py'
   - cmd: git clone https://github.com/eclipse/paho.mqtt.testing.git
   - cmd: cd paho.mqtt.testing\interoperability
   - ps: Start-Process C:\Python36\python -ArgumentList 'startbroker.py -c localhost_testing.conf'
@@ -24,9 +28,9 @@ build_script:
 
     echo %APPVEYOR_BUILD_WORKER_IMAGE%
 
-    if "%APPVEYOR_BUILD_WORKER_IMAGE%" == "Visual Studio 2015" call "C:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\vcvarsall.bat" x64
+    if "%APPVEYOR_BUILD_WORKER_IMAGE%" == "Visual Studio 2015" call "C:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\vcvarsall.bat" %PAHO_WINDOWS_BUILD_BIT%
 
-    if "%APPVEYOR_BUILD_WORKER_IMAGE%" == "Visual Studio 2013" call "C:\Program Files (x86)\Microsoft Visual Studio 12.0\VC\vcvarsall.bat" x64
+    if "%APPVEYOR_BUILD_WORKER_IMAGE%" == "Visual Studio 2013" call "C:\Program Files (x86)\Microsoft Visual Studio 12.0\VC\vcvarsall.bat" %PAHO_WINDOWS_BUILD_BIT%
 
     cmake -G "NMake Makefiles" -DPAHO_WITH_SSL=TRUE -DPAHO_BUILD_DOCUMENTATION=FALSE -DPAHO_BUILD_SAMPLES=TRUE -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=TRUE ..
 
@@ -60,7 +64,7 @@ after_build:
 
     7z rn %ZIPNAME% MQTTVersion.exe bin\MQTTVersion.exe
 
-    7z a %ZIPNAME% src\MQTTClient.h src\MQTTAsync.h src\MQTTClientPersistence.h
+    7z a %ZIPNAME% src\MQTTClient.h src\MQTTAsync.h src\MQTTClientPersistence.h src\MQTTProperties.h src\MQTTReasonCodes.h src\MQTTSubscribeOpts.h
 
     7z rn %ZIPNAME% src include
 
