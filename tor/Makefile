@@ -41,7 +41,7 @@ endef
 define Package/tor
 $(call Package/tor/Default)
   TITLE:=An anonymous Internet communication system
-  DEPENDS:=+libevent2 +libopenssl +libpthread +librt +zlib +libcap
+  DEPENDS:=+libevent2 +libopenssl +libpthread +librt +zlib +libcap +libzstd
 endef
 
 define Package/tor/description
