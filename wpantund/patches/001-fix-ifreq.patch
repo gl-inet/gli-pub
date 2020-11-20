@@ -1,0 +1,26 @@
+Index: wpantund-2019-11-13/src/util/netif-mgmt.c
+===================================================================
+--- wpantund-2019-11-13.orig/src/util/netif-mgmt.c
++++ wpantund-2019-11-13/src/util/netif-mgmt.c
+@@ -42,6 +42,8 @@
+ #include <net/if.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
++#include <sys/socket.h>
++#include <linux/if.h>
+ 
+ #ifndef __APPLE__
+ #include <linux/if_tun.h>
+Index: wpantund-2019-11-13/src/util/tunnel.c
+===================================================================
+--- wpantund-2019-11-13.orig/src/util/tunnel.c
++++ wpantund-2019-11-13/src/util/tunnel.c
+@@ -43,6 +43,8 @@
+ #include <net/if.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
++#include <sys/socket.h>
++#include <linux/if.h>
+ 
+ #ifndef __APPLE__
+ #include <linux/if_tun.h>
