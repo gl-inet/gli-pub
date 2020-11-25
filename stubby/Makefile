@@ -60,6 +60,7 @@ define Package/stubby/install
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_DATA)  ./files/stubby.config $(1)/etc/config/stubby
 	$(INSTALL_DIR) $(1)/etc/stubby
+	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/etc/stubby/stubby.yml $(1)/etc/stubby/stubby.yml.default
 	$(INSTALL_DATA) ./files/stubby.yml $(1)/etc/stubby/stubby.yml
 	$(INSTALL_DATA) ./files/stubby.update $(1)/lib/upgrade/keep.d/stubby
