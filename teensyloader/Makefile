@@ -53,10 +53,10 @@ endef
 # PKG_SOURCE which is not defined here to download the source from the web.
 # In order to just build a simple program that we have just written, it is
 # much easier to do it this way.
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./src/* $(PKG_BUILD_DIR)/
-endef
+#define Build/Prepare
+#	mkdir -p $(PKG_BUILD_DIR)
+#	$(CP) ./src/* $(PKG_BUILD_DIR)/
+#endef
 
 
 # We do not need to define Build/Configure or Build/Compile directives
