@@ -15,7 +15,7 @@ PKG_SOURCE_URL:=http://github.com/PaulStoffregen/teensy_loader_cli
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE_VERSION:=ee411ad7caa2b40751f1b776c3311320777a9609
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-#PKG_MD5SUM:=c52d65fdee0712af6f77eb2b60974ac7
+PKG_MIRROR_HASH:=9ef2dba6cad4bd738a696e94cf4e1a109352048bd5c802f23e21f28ee3441d24
 
 # This specifies the directory where we're going to build the program. 
 # The root build directory, $(BUILD_DIR), is by default the build_mipsel
