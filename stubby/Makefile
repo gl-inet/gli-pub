@@ -5,25 +5,23 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=stubby
-PKG_VERSION:=0.2.3
+PKG_VERSION:=0.3.0
 PKG_RELEASE:=1
 
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/getdnsapi/$(PKG_NAME)
+PKG_SOURCE_VERSION:=v$(PKG_VERSION)
+PKG_MIRROR_HASH:=f1585aa6881bf39c2c8f99df045d5739bb78403417a1e827644cb202fa4280f0
+
+PKG_MAINTAINER:=Jonathan Underwood <jonathan.underwood@gmail.com>
 PKG_LICENSE:=BSD-3-Clause
 PKG_LICENSE_FILES:=COPYING
-PKG_MAINTAINER:=David Mora <iamperson347+public@gmail.com>
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=https://github.com/getdnsapi/$(PKG_NAME)
-PKG_SOURCE_VERSION:=8fb853ac8d6148fd9b53fdcbc107ecd375071ec5
-PKG_MIRROR_HASH:=db736f4a728970d2441009ac19716d6129700eab3f441a5db3a0c26d41bf162c
-
-PKG_FIXUP:=autoreconf
-
-PKG_INSTALL:=1
+CMAKE_INSTALL:=1
+PKG_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/cmake.mk
 
 ifdef CONFIG_TARGET_ipq806x
 ifeq ($(CONFIG_GCC_VERSION_4_8),y)
@@ -31,25 +29,29 @@ ifeq ($(CONFIG_GCC_VERSION_4_8),y)
 endif
 endif
 
+define Package/stubby/Default
+  TITLE:=stubby
+  URL:=https://dnsprivacy.org/wiki/display/DP/DNS+Privacy+Daemon+-+Stubby
+endef
+
 define Package/stubby
-	TITLE:=stubby
-	URL:=https://dnsprivacy.org/wiki/display/DP/DNS+Privacy+Daemon+-+Stubby
+  $(call Package/stubby/Default)
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=IP Addresses and Names
+  TITLE+= - (daemon that uses getdns)
+  USERID:=stubby=410:stubby=410
+  DEPENDS:= +libyaml +getdns +ca-certs
 endef
 
 define Package/stubby/description
-	This package contains the Stubby daemon (which utilizes the getdns library).
-
-	See https://github.com/openwrt/packages/blob/master/net/stubby/files/README.md for more details.
+  This package contains the Stubby daemon (which utilizes the getdns library).
+  See https://github.com/openwrt/packages/blob/master/net/stubby/files/README.md for more details.
 endef
 
-define Package/stubby
-	$(call Package/stubby/Default)
-	SECTION:=net
-	CATEGORY:=Network
-	SUBMENU:=IP Addresses and Names
-	TITLE+= - (daemon that uses getdns)
-	USERID:=stubby=410:stubby=410
-	DEPENDS:= +libyaml +getdns
+define Package/stubby/conffiles
+/etc/stubby/stubby.yml
+/etc/config/stubby
 endef
 
 define Package/stubby/install
@@ -57,18 +59,13 @@ define Package/stubby/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/stubby $(1)/usr/sbin/stubby
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN)  ./files/stubby.init $(1)/etc/init.d/stubby
-	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_DATA)  ./files/stubby.config $(1)/etc/config/stubby
 	$(INSTALL_DIR) $(1)/etc/stubby
-	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/etc/stubby/stubby.yml $(1)/etc/stubby/stubby.yml.default
 	$(INSTALL_DATA) ./files/stubby.yml $(1)/etc/stubby/stubby.yml
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) ./files/stubby.config $(1)/etc/config/stubby
+	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
 	$(INSTALL_DATA) ./files/stubby.update $(1)/lib/upgrade/keep.d/stubby
-endef
-
-
-define Package/stubby/conffiles
-	/etc/stubby/stubby.yml
 endef
 
 $(eval $(call BuildPackage,stubby))
