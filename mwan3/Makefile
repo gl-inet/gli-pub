@@ -8,8 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwan3
-PKG_VERSION:=2.8.4
-PKG_RELEASE:=2
+PKG_VERSION:=2.8.16
+PKG_RELEASE:=1
 PKG_MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
 PKG_LICENSE:=GPL-2.0
 
@@ -20,6 +20,7 @@ define Package/mwan3
    CATEGORY:=Network
    SUBMENU:=Routing and Redirection
    DEPENDS:= \
+     +rpcd \
      +ip \
      +ipset \
      +iptables \
