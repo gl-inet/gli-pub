@@ -2,12 +2,16 @@ Index: rtty-8.0.0/src/net.c
 ===================================================================
 --- rtty-8.0.0.orig/src/net.c
 +++ rtty-8.0.0/src/net.c
-@@ -22,6 +22,8 @@
+@@ -22,6 +22,12 @@
   * SOFTWARE.
   */
  
 +#include <sys/ioctl.h>
++#ifdef IPQ40XX
++#include <net/if.h>
++#else
 +#include <linux/if.h>
++#endif
  #include <stdbool.h>
  #include <unistd.h>
  #include <stdlib.h>
